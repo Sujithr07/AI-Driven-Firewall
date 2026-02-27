@@ -264,14 +264,14 @@ def init_db():
     """Initialize database - check if admin user exists, create if not"""
     try:
         # Check if default admin user exists
-        result = supabase.table('users').select('*').eq('username', 'ganesh').execute()
+        result = supabase.table('users').select('*').eq('username', 'Me').execute()
         
         if not result.data:
             # Create default admin user
-            admin_password = generate_password_hash('ganesh123')
+            admin_password = generate_password_hash('user123')
             supabase.table('users').insert({
-                'username': 'ganesh',
-                'email': 'ganesh@firewall.local',
+                'username': 'Me',
+                'email': 'me@firewall.local',
                 'password_hash': admin_password,
                 'role': 'admin'
             }).execute()
@@ -884,6 +884,6 @@ def calculate_metrics():
 if __name__ == '__main__':
     print("=======================================================================")
     print("FLASK BACKEND RUNNING: Access the API at http://127.0.0.1:5000")
-    print("Default admin credentials: username='ganesh', password='ganesh123'")
+    print("Default admin credentials: username='Me', password='user123'")
     print("=======================================================================")
     app.run(debug=True, port=5000)
