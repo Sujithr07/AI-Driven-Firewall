@@ -2,7 +2,6 @@
 export default {
   content: [
     "./index.html",
-    "./main.jsx",
-    "./App.jsx",
+    "./**/*.jsx",
   ],
 }
