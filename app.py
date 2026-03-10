@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 import time
 import random
 
+from detection_agent import DetectionAgent
+
 # Load environment variables
 load_dotenv()
 
@@ -230,6 +232,28 @@ def _init_sqlite():
             quarantined_count INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS detection_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            src_ip TEXT,
+            dst_ip TEXT,
+            protocol TEXT,
+            sport INTEGER,
+            dport INTEGER,
+            size INTEGER,
+            flags TEXT,
+            rf_prediction TEXT,
+            rf_confidence REAL,
+            rl_state TEXT,
+            rl_action TEXT,
+            rl_reward REAL,
+            was_exploration INTEGER,
+            is_malicious INTEGER,
+            severity TEXT,
+            reason TEXT,
+            epsilon REAL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
     conn.close()
@@ -287,6 +311,40 @@ init_db()
 
 # Track app start time to reset metrics on launch
 APP_START_TIME = time.time() * 1000  # Store in milliseconds to match timestamp format
+
+
+# ---------------------------------------------------------------------------
+# Detection Agent Setup
+# ---------------------------------------------------------------------------
+
+def _save_detection_to_db(detection):
+    """Callback to persist detection agent results to SQLite."""
+    try:
+        supabase.table('detection_logs').insert({
+            'timestamp': detection['timestamp'],
+            'src_ip': detection['src_ip'],
+            'dst_ip': detection['dst_ip'],
+            'protocol': detection['protocol'],
+            'sport': detection['sport'],
+            'dport': detection['dport'],
+            'size': detection['size'],
+            'flags': detection.get('flags', ''),
+            'rf_prediction': detection['rf_prediction'],
+            'rf_confidence': detection['rf_confidence'],
+            'rl_state': detection['rl_state'],
+            'rl_action': detection['rl_action'],
+            'rl_reward': detection['rl_reward'],
+            'was_exploration': int(detection['was_exploration']),
+            'is_malicious': int(detection['is_malicious']),
+            'severity': detection['severity'],
+            'reason': detection['reason'],
+            'epsilon': detection['epsilon'],
+        }).execute()
+    except Exception as e:
+        print(f"[DetectionAgent DB] Error saving detection: {e}")
+
+
+detection_agent = DetectionAgent(db_callback=_save_detection_to_db)
 
 # In-memory cache for real-time data (for faster access)
 LOG_DATABASE = [] 
@@ -880,10 +938,85 @@ def calculate_metrics():
         }
 
 
+# --- Detection Agent API Endpoints ---
+
+@app.route('/api/agent/start', methods=['POST'])
+@jwt_required()
+def start_agent():
+    """Start the detection agent."""
+    data = request.get_json() or {}
+    use_simulation = data.get('simulation', True)
+    interface = data.get('interface', None)
+    result = detection_agent.start(interface=interface, use_simulation=use_simulation)
+    return jsonify(result)
+
+
+@app.route('/api/agent/stop', methods=['POST'])
+@jwt_required()
+def stop_agent():
+    """Stop the detection agent."""
+    result = detection_agent.stop()
+    return jsonify(result)
+
+
+@app.route('/api/agent/status', methods=['GET'])
+@jwt_required()
+def agent_status():
+    """Get detection agent status and RL stats."""
+    status = detection_agent.get_status()
+    return jsonify(status)
+
+
+@app.route('/api/agent/detections', methods=['GET'])
+@jwt_required()
+def agent_detections():
+    """Get recent detections from the agent."""
+    limit = request.args.get('limit', 50, type=int)
+    detections = detection_agent.get_recent_detections(limit=limit)
+    return jsonify({'detections': detections})
+
+
+@app.route('/api/agent/qtable', methods=['GET'])
+@jwt_required()
+def agent_qtable():
+    """Get Q-table summary."""
+    summary = detection_agent.rl_agent.get_q_table_summary()
+    stats = detection_agent.rl_agent.get_stats()
+    return jsonify({'q_table': summary, 'stats': stats})
+
+
+@app.route('/api/agent/detections/history', methods=['GET'])
+@jwt_required()
+def agent_detection_history():
+    """Get detection history from database with pagination."""
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    offset = (page - 1) * per_page
+
+    try:
+        query = supabase.table('detection_logs').select('*', count='exact')
+        result = query.order('timestamp', desc=True).range(offset, offset + per_page - 1).execute()
+
+        return jsonify({
+            'detections': result.data,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': result.count if hasattr(result, 'count') else len(result.data),
+                'pages': ((result.count if hasattr(result, 'count') else len(result.data)) + per_page - 1) // per_page,
+            }
+        })
+    except Exception as e:
+        print(f"Error in agent_detection_history: {e}")
+        return jsonify({'detections': [], 'pagination': {'page': 1, 'per_page': per_page, 'total': 0, 'pages': 0}}), 500
+
+
 # --- Server Initialization ---
 if __name__ == '__main__':
     print("=======================================================================")
     print("FLASK BACKEND RUNNING: Access the API at http://127.0.0.1:5000")
     print("Default admin credentials: username='Me', password='user123'")
+    print("=======================================================================")
+    print("Detection Agent: Use POST /api/agent/start to begin packet inspection")
     print("=======================================================================")
     app.run(debug=True, port=5000)

@@ -1,0 +1,863 @@
+"""
+Detection Agent Module
+======================
+Reinforcement Learning + RandomForest-based network intrusion detection agent.
+
+Pipeline:
+  1. Scapy sniffs packets from the network interface
+  2. Features extracted: src IP, dst IP, protocol, port, TCP flags, packet size
+  3. RandomForest Classifier gives initial prediction (attack / normal)
+  4. RL Agent builds state tuple and uses epsilon-greedy Q-learning
+  5. Action: "allow" or "block"
+  6. Reward: +1 correct, -1 mistake
+  7. Q-table updated, epsilon decays
+"""
+
+import threading
+import time
+import random
+import json
+import os
+import pickle
+import collections
+import numpy as np
+from datetime import datetime
+
+try:
+    from scapy.all import sniff, IP, TCP, UDP, ICMP, conf
+    SCAPY_AVAILABLE = True
+except ImportError:
+    SCAPY_AVAILABLE = False
+
+try:
+    from sklearn.ensemble import RandomForestClassifier
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+
+
+# ---------------------------------------------------------------------------
+# Known malicious / suspicious IP ranges and ports (for labeling)
+# ---------------------------------------------------------------------------
+
+SUSPICIOUS_PORTS = {4444, 5555, 6666, 1337, 31337, 12345, 65535, 8888, 9999}
+WELL_KNOWN_PORTS = {80, 443, 53, 22, 21, 25, 110, 143, 993, 995, 8080, 3306, 5432, 27017}
+
+PRIVATE_RANGES = [
+    ("10.0.0.0", "10.255.255.255"),
+    ("172.16.0.0", "172.31.255.255"),
+    ("192.168.0.0", "192.168.255.255"),
+    ("127.0.0.0", "127.255.255.255"),
+]
+
+
+def _ip_to_int(ip_str):
+    """Convert dotted IP string to integer."""
+    parts = ip_str.split(".")
+    if len(parts) != 4:
+        return 0
+    try:
+        return sum(int(p) << (8 * (3 - i)) for i, p in enumerate(parts))
+    except ValueError:
+        return 0
+
+
+def _is_private(ip_str):
+    """Check if IP is in a private / reserved range."""
+    ip_int = _ip_to_int(ip_str)
+    for lo, hi in PRIVATE_RANGES:
+        if _ip_to_int(lo) <= ip_int <= _ip_to_int(hi):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Feature extraction from a Scapy packet
+# ---------------------------------------------------------------------------
+
+def extract_features(packet):
+    """
+    Extract numeric + categorical features from a raw Scapy packet.
+    Returns (feature_dict, numeric_vector) or None if packet is not IP.
+    """
+    if not packet.haslayer(IP):
+        return None
+
+    ip_layer = packet[IP]
+    src_ip = ip_layer.src
+    dst_ip = ip_layer.dst
+    proto_num = ip_layer.proto  # 6=TCP, 17=UDP, 1=ICMP
+    pkt_size = len(packet)
+
+    # Determine protocol name
+    if packet.haslayer(TCP):
+        protocol = "TCP"
+        sport = packet[TCP].sport
+        dport = packet[TCP].dport
+        flags = str(packet[TCP].flags)
+    elif packet.haslayer(UDP):
+        protocol = "UDP"
+        sport = packet[UDP].sport
+        dport = packet[UDP].dport
+        flags = ""
+    elif packet.haslayer(ICMP):
+        protocol = "ICMP"
+        sport = 0
+        dport = 0
+        flags = ""
+    else:
+        protocol = f"OTHER({proto_num})"
+        sport = 0
+        dport = 0
+        flags = ""
+
+    # Categorical features for RL state
+    src_private = _is_private(src_ip)
+    dst_private = _is_private(dst_ip)
+
+    # IP type classification
+    if not src_private and dst_private:
+        ip_type = "external_to_internal"
+    elif src_private and not dst_private:
+        ip_type = "internal_to_external"
+    elif src_private and dst_private:
+        ip_type = "internal"
+    else:
+        ip_type = "external"
+
+    # Port type classification
+    if dport in SUSPICIOUS_PORTS or sport in SUSPICIOUS_PORTS:
+        port_type = "suspicious"
+    elif dport in WELL_KNOWN_PORTS or sport in WELL_KNOWN_PORTS:
+        port_type = "well_known"
+    elif dport > 1024 or sport > 1024:
+        port_type = "high"
+    else:
+        port_type = "low_unknown"
+
+    # Flag-based risk marker
+    has_syn = "S" in flags and "A" not in flags  # SYN without ACK = scan
+    has_fin = "F" in flags
+    has_rst = "R" in flags
+
+    # Numeric feature vector for RandomForest:
+    # [proto_num, sport, dport, pkt_size, is_src_private, is_dst_private,
+    #  has_syn, has_fin, has_rst, port_is_suspicious, port_is_well_known]
+    numeric = np.array([
+        proto_num,
+        sport,
+        dport,
+        pkt_size,
+        int(src_private),
+        int(dst_private),
+        int(has_syn),
+        int(has_fin),
+        int(has_rst),
+        int(dport in SUSPICIOUS_PORTS or sport in SUSPICIOUS_PORTS),
+        int(dport in WELL_KNOWN_PORTS or sport in WELL_KNOWN_PORTS),
+    ], dtype=np.float64).reshape(1, -1)
+
+    feature_dict = {
+        "src_ip": src_ip,
+        "dst_ip": dst_ip,
+        "protocol": protocol,
+        "sport": sport,
+        "dport": dport,
+        "size": pkt_size,
+        "flags": flags,
+        "ip_type": ip_type,
+        "port_type": port_type,
+        "has_syn": has_syn,
+        "has_fin": has_fin,
+        "has_rst": has_rst,
+    }
+
+    return feature_dict, numeric
+
+
+# ---------------------------------------------------------------------------
+# RandomForest Classifier (fast initial prediction)
+# ---------------------------------------------------------------------------
+
+class TrafficClassifier:
+    """
+    RandomForest classifier that provides fast initial attack/normal prediction.
+    Self-trains on labeled samples collected during operation.
+    """
+
+    MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rf_model.pkl")
+
+    def __init__(self):
+        self.model = None
+        self.X_buffer = []
+        self.y_buffer = []
+        self.min_samples = 20  # Minimum samples before training
+        self._load_or_init()
+
+    def _load_or_init(self):
+        """Load saved model or initialize a new one with synthetic baseline data."""
+        if os.path.exists(self.MODEL_PATH):
+            try:
+                with open(self.MODEL_PATH, "rb") as f:
+                    saved = pickle.load(f)
+                self.model = saved["model"]
+                self.X_buffer = saved.get("X_buffer", [])
+                self.y_buffer = saved.get("y_buffer", [])
+                return
+            except Exception:
+                pass
+
+        # Bootstrap with synthetic training data so agent works from the start
+        self._generate_synthetic_baseline()
+
+    def _generate_synthetic_baseline(self):
+        """Generate synthetic training data for initial model."""
+        rng = random.Random(42)
+        X, y = [], []
+
+        for _ in range(200):
+            # Normal traffic patterns
+            proto = rng.choice([6, 17])  # TCP/UDP
+            sport = rng.randint(1024, 65535)
+            dport = rng.choice([80, 443, 53, 22, 8080, 3306])
+            size = rng.randint(64, 1500)
+            X.append([proto, sport, dport, size, 1, 0, 0, 0, 0, 0, 1])
+            y.append(0)  # normal
+
+        for _ in range(100):
+            # Attack-like patterns
+            proto = rng.choice([6, 17, 1])
+            sport = rng.randint(1024, 65535)
+            dport = rng.choice(list(SUSPICIOUS_PORTS) + [0, 445, 135, 139])
+            size = rng.choice([0, 40, 60, rng.randint(5000, 65535)])
+            has_syn = rng.choice([0, 1, 1])  # more SYN scans
+            X.append([proto, sport, dport, size, 0, 1, has_syn, 0, 0, 1, 0])
+            y.append(1)  # attack
+
+        self.X_buffer = X
+        self.y_buffer = y
+        self._train()
+
+    def _train(self):
+        """Train / retrain the RandomForest on buffered data."""
+        if not SKLEARN_AVAILABLE or len(self.X_buffer) < self.min_samples:
+            return
+        X = np.array(self.X_buffer)
+        y = np.array(self.y_buffer)
+        self.model = RandomForestClassifier(n_estimators=50, max_depth=10, random_state=42)
+        self.model.fit(X, y)
+
+    def predict(self, numeric_features):
+        """
+        Predict: 0 = normal, 1 = attack.
+        Returns (prediction, confidence).
+        """
+        if self.model is None:
+            # Heuristic fallback if model not ready
+            dport = numeric_features[0, 2]
+            is_susp = numeric_features[0, 9]
+            if is_susp:
+                return 1, 0.7
+            return 0, 0.6
+
+        pred = self.model.predict(numeric_features)[0]
+        proba = self.model.predict_proba(numeric_features)[0]
+        confidence = float(max(proba))
+        return int(pred), confidence
+
+    def add_sample(self, numeric_features, label):
+        """Add a labeled sample and periodically retrain."""
+        self.X_buffer.append(numeric_features.flatten().tolist())
+        self.y_buffer.append(label)
+
+        # Keep buffer bounded
+        max_buffer = 5000
+        if len(self.X_buffer) > max_buffer:
+            self.X_buffer = self.X_buffer[-max_buffer:]
+            self.y_buffer = self.y_buffer[-max_buffer:]
+
+        # Retrain every 50 new samples
+        if len(self.X_buffer) % 50 == 0:
+            self._train()
+
+    def save(self):
+        """Persist model to disk."""
+        try:
+            with open(self.MODEL_PATH, "wb") as f:
+                pickle.dump({
+                    "model": self.model,
+                    "X_buffer": self.X_buffer[-2000:],
+                    "y_buffer": self.y_buffer[-2000:],
+                }, f)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Reinforcement Learning Agent (Q-Learning with epsilon-greedy)
+# ---------------------------------------------------------------------------
+
+class RLAgent:
+    """
+    Q-Learning agent for network traffic decision making.
+
+    State:  (reason, ip_type, protocol, port_type)
+    Action: "allow" or "block"
+    """
+
+    ACTIONS = ["allow", "block"]
+    Q_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_table.json")
+
+    def __init__(self, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.05):
+        self.alpha = alpha          # Learning rate
+        self.gamma = gamma          # Discount factor (not used in single-step but kept for extension)
+        self.epsilon = epsilon      # Exploration rate
+        self.epsilon_decay = epsilon_decay
+        self.epsilon_min = epsilon_min
+        self.q_table = {}           # {state_str: {"allow": Q, "block": Q}}
+        self.total_decisions = 0
+        self.correct_decisions = 0
+        self.episode_rewards = []   # Track recent rewards
+        self._load()
+
+    def _state_key(self, state_tuple):
+        """Convert state tuple to string key for Q-table."""
+        return "|".join(str(s) for s in state_tuple)
+
+    def _ensure_state(self, key):
+        """Initialize Q-values for unseen state."""
+        if key not in self.q_table:
+            self.q_table[key] = {"allow": 0.0, "block": 0.0}
+
+    def choose_action(self, state_tuple):
+        """
+        Epsilon-greedy action selection.
+        Returns (action, was_exploration).
+        """
+        key = self._state_key(state_tuple)
+        self._ensure_state(key)
+
+        if random.random() < self.epsilon:
+            action = random.choice(self.ACTIONS)
+            return action, True  # exploration
+        else:
+            q_vals = self.q_table[key]
+            if q_vals["allow"] == q_vals["block"]:
+                action = random.choice(self.ACTIONS)
+            else:
+                action = max(q_vals, key=q_vals.get)
+            return action, False  # exploitation
+
+    def update(self, state_tuple, action, reward):
+        """
+        Update Q-table: Q[s][a] = old + alpha * (reward - old)
+        """
+        key = self._state_key(state_tuple)
+        self._ensure_state(key)
+
+        old_value = self.q_table[key][action]
+        self.q_table[key][action] = old_value + self.alpha * (reward - old_value)
+
+        # Decay epsilon
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+        # Track accuracy
+        self.total_decisions += 1
+        if reward > 0:
+            self.correct_decisions += 1
+
+        self.episode_rewards.append(reward)
+        # Keep only last 500 rewards
+        if len(self.episode_rewards) > 500:
+            self.episode_rewards = self.episode_rewards[-500:]
+
+    def get_stats(self):
+        """Return current agent statistics."""
+        accuracy = (self.correct_decisions / self.total_decisions * 100) if self.total_decisions > 0 else 0.0
+        recent_rewards = self.episode_rewards[-100:] if self.episode_rewards else []
+        avg_reward = sum(recent_rewards) / len(recent_rewards) if recent_rewards else 0.0
+        return {
+            "epsilon": round(self.epsilon, 4),
+            "total_decisions": self.total_decisions,
+            "correct_decisions": self.correct_decisions,
+            "accuracy": round(accuracy, 2),
+            "avg_reward_last_100": round(avg_reward, 3),
+            "q_table_size": len(self.q_table),
+            "exploration_rate": f"{self.epsilon * 100:.1f}%",
+        }
+
+    def get_q_table_summary(self):
+        """Return a summary of Q-table entries sorted by confidence."""
+        entries = []
+        for state_key, q_vals in self.q_table.items():
+            best_action = max(q_vals, key=q_vals.get)
+            confidence = abs(q_vals["block"] - q_vals["allow"])
+            entries.append({
+                "state": state_key,
+                "allow_q": round(q_vals["allow"], 3),
+                "block_q": round(q_vals["block"], 3),
+                "best_action": best_action,
+                "confidence": round(confidence, 3),
+            })
+        entries.sort(key=lambda x: x["confidence"], reverse=True)
+        return entries[:50]  # Top 50
+
+    def save(self):
+        """Persist Q-table to disk."""
+        try:
+            data = {
+                "q_table": self.q_table,
+                "epsilon": self.epsilon,
+                "total_decisions": self.total_decisions,
+                "correct_decisions": self.correct_decisions,
+            }
+            with open(self.Q_TABLE_PATH, "w") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+    def _load(self):
+        """Load Q-table from disk."""
+        if os.path.exists(self.Q_TABLE_PATH):
+            try:
+                with open(self.Q_TABLE_PATH, "r") as f:
+                    data = json.load(f)
+                self.q_table = data.get("q_table", {})
+                self.epsilon = data.get("epsilon", self.epsilon)
+                self.total_decisions = data.get("total_decisions", 0)
+                self.correct_decisions = data.get("correct_decisions", 0)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Detection Agent — orchestrates sniffer, classifier, and RL agent
+# ---------------------------------------------------------------------------
+
+class DetectionAgent:
+    """
+    Main orchestrator that:
+      1. Sniffs packets via Scapy
+      2. Extracts features
+      3. Gets RF classifier prediction
+      4. Builds RL state and picks action
+      5. Computes reward and updates Q-table
+    """
+
+    def __init__(self, db_callback=None):
+        self.classifier = TrafficClassifier()
+        self.rl_agent = RLAgent()
+        self.db_callback = db_callback  # Function to save detections to DB
+
+        self._running = False
+        self._thread = None
+        self._lock = threading.Lock()
+
+        # Recent detections buffer (thread-safe ring buffer)
+        self.max_detections = 200
+        self.detections = collections.deque(maxlen=self.max_detections)
+
+        # Aggregate counters
+        self.stats = {
+            "packets_processed": 0,
+            "attacks_detected": 0,
+            "packets_allowed": 0,
+            "packets_blocked": 0,
+            "start_time": None,
+        }
+
+    # ---- public API ----
+
+    def start(self, interface=None, use_simulation=False):
+        """Start the detection agent in a background thread."""
+        if self._running:
+            return {"status": "already_running"}
+
+        self._running = True
+        self.stats["start_time"] = time.time()
+
+        if use_simulation or not SCAPY_AVAILABLE:
+            self._thread = threading.Thread(target=self._simulation_loop, daemon=True)
+        else:
+            self._thread = threading.Thread(
+                target=self._sniff_loop, args=(interface,), daemon=True
+            )
+        self._thread.start()
+        mode = "simulation" if (use_simulation or not SCAPY_AVAILABLE) else "live_capture"
+        return {"status": "started", "mode": mode}
+
+    def stop(self):
+        """Stop the detection agent."""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=5)
+            self._thread = None
+        # Persist learned data
+        self.classifier.save()
+        self.rl_agent.save()
+        return {"status": "stopped"}
+
+    def is_running(self):
+        return self._running
+
+    def get_recent_detections(self, limit=50):
+        """Return recent detections."""
+        with self._lock:
+            items = list(self.detections)
+        return items[-limit:]
+
+    def get_status(self):
+        """Full status report."""
+        uptime = 0
+        if self.stats["start_time"]:
+            uptime = time.time() - self.stats["start_time"]
+        return {
+            "running": self._running,
+            "uptime_seconds": round(uptime, 1),
+            "packets_processed": self.stats["packets_processed"],
+            "attacks_detected": self.stats["attacks_detected"],
+            "packets_allowed": self.stats["packets_allowed"],
+            "packets_blocked": self.stats["packets_blocked"],
+            "rl_stats": self.rl_agent.get_stats(),
+            "scapy_available": SCAPY_AVAILABLE,
+            "sklearn_available": SKLEARN_AVAILABLE,
+        }
+
+    # ---- internal ----
+
+    def _process_packet(self, packet):
+        """Core pipeline: extract -> classify -> RL decide -> reward -> update."""
+        result = extract_features(packet)
+        if result is None:
+            return  # Non-IP packet, skip
+
+        features, numeric = result
+
+        # Step 1: RandomForest initial prediction
+        rf_pred, rf_confidence = self.classifier.predict(numeric)
+        rf_label = "attack" if rf_pred == 1 else "normal"
+
+        # Step 2: Build RL state
+        # Determine reason from RF + feature heuristics
+        if rf_pred == 1:
+            if features["has_syn"]:
+                reason = "syn_scan"
+            elif features["port_type"] == "suspicious":
+                reason = "suspicious_port"
+            elif features["ip_type"] == "external_to_internal":
+                reason = "external_intrusion"
+            else:
+                reason = "rf_flagged"
+        else:
+            if features["port_type"] == "well_known":
+                reason = "normal_service"
+            elif features["ip_type"] == "internal":
+                reason = "internal_traffic"
+            else:
+                reason = "benign"
+
+        state = (reason, features["ip_type"], features["protocol"], features["port_type"])
+
+        # Step 3: RL agent chooses action
+        action, was_exploration = self.rl_agent.choose_action(state)
+
+        # Step 4: Compute reward
+        # Ground truth heuristic: combine RF prediction with feature-based rules
+        is_actually_malicious = self._heuristic_ground_truth(features, rf_pred, rf_confidence)
+
+        if action == "block" and is_actually_malicious:
+            reward = 1.0   # Correctly blocked an attack
+        elif action == "allow" and not is_actually_malicious:
+            reward = 1.0   # Correctly allowed safe traffic
+        elif action == "block" and not is_actually_malicious:
+            reward = -1.0  # False positive — blocked safe traffic
+        else:
+            reward = -1.0  # False negative — allowed an attack
+
+        # Step 5: Update Q-table
+        self.rl_agent.update(state, action, reward)
+
+        # Step 6: Feed back to classifier for continuous learning
+        true_label = 1 if is_actually_malicious else 0
+        self.classifier.add_sample(numeric, true_label)
+
+        # Step 7: Record detection
+        severity = "High" if is_actually_malicious else ("Medium" if rf_confidence < 0.7 else "Low")
+        if action == "block" and is_actually_malicious:
+            severity = "High"
+        elif action == "block" and not is_actually_malicious:
+            severity = "Medium"
+
+        detection = {
+            "timestamp": time.time() * 1000,
+            "src_ip": features["src_ip"],
+            "dst_ip": features["dst_ip"],
+            "protocol": features["protocol"],
+            "sport": features["sport"],
+            "dport": features["dport"],
+            "size": features["size"],
+            "flags": features["flags"],
+            "rf_prediction": rf_label,
+            "rf_confidence": round(rf_confidence, 3),
+            "rl_state": "|".join(str(s) for s in state),
+            "rl_action": action,
+            "rl_reward": reward,
+            "was_exploration": was_exploration,
+            "is_malicious": is_actually_malicious,
+            "severity": severity,
+            "reason": reason,
+            "epsilon": round(self.rl_agent.epsilon, 4),
+        }
+
+        with self._lock:
+            self.detections.append(detection)
+            self.stats["packets_processed"] += 1
+            if is_actually_malicious:
+                self.stats["attacks_detected"] += 1
+            if action == "allow":
+                self.stats["packets_allowed"] += 1
+            else:
+                self.stats["packets_blocked"] += 1
+
+        # Callback to save to DB
+        if self.db_callback:
+            try:
+                self.db_callback(detection)
+            except Exception:
+                pass
+
+        # Auto-save periodically
+        if self.stats["packets_processed"] % 100 == 0:
+            self.classifier.save()
+            self.rl_agent.save()
+
+    def _heuristic_ground_truth(self, features, rf_pred, rf_confidence):
+        """
+        Approximate ground truth using multi-signal heuristic.
+        In production this would use labeled data or threat intel feeds.
+        """
+        score = 0.0
+
+        # RF prediction with confidence weighting
+        if rf_pred == 1:
+            score += 0.4 * rf_confidence
+        else:
+            score -= 0.3 * rf_confidence
+
+        # Port-based signals
+        if features["port_type"] == "suspicious":
+            score += 0.35
+        elif features["port_type"] == "well_known":
+            score -= 0.2
+
+        # SYN scan detection
+        if features["has_syn"] and features["protocol"] == "TCP":
+            score += 0.25
+
+        # RST flood
+        if features["has_rst"]:
+            score += 0.1
+
+        # External to internal is riskier
+        if features["ip_type"] == "external_to_internal":
+            score += 0.15
+        elif features["ip_type"] == "internal":
+            score -= 0.15
+
+        # Very large or very small packets
+        if features["size"] > 8000 or features["size"] < 40:
+            score += 0.1
+
+        return score >= 0.35
+
+    def _sniff_loop(self, interface):
+        """Live packet capture using Scapy."""
+        try:
+            # Disable verbose output
+            conf.verb = 0
+            sniff(
+                iface=interface,
+                prn=self._process_packet,
+                store=False,
+                stop_filter=lambda _: not self._running,
+            )
+        except PermissionError:
+            print("[DetectionAgent] ERROR: Packet capture requires administrator/root privileges.")
+            print("[DetectionAgent] Falling back to simulation mode.")
+            self._simulation_loop()
+        except Exception as e:
+            print(f"[DetectionAgent] Sniff error: {e}")
+            print("[DetectionAgent] Falling back to simulation mode.")
+            self._simulation_loop()
+
+    def _simulation_loop(self):
+        """
+        Simulated packet generation for development / non-admin environments.
+        Creates realistic synthetic packets that go through the full pipeline.
+        """
+        if not SCAPY_AVAILABLE:
+            # Pure simulation without Scapy — generate feature dicts directly
+            self._pure_simulation_loop()
+            return
+
+        from scapy.all import Ether, Raw
+
+        while self._running:
+            try:
+                packet = self._generate_synthetic_packet()
+                self._process_packet(packet)
+                # Variable rate: faster when exploring, slower when stable
+                delay = random.uniform(0.5, 2.0)
+                time.sleep(delay)
+            except Exception as e:
+                print(f"[DetectionAgent] Simulation error: {e}")
+                time.sleep(1)
+
+    def _generate_synthetic_packet(self):
+        """Create a realistic synthetic Scapy packet."""
+        from scapy.all import Ether, Raw
+
+        # 70% normal, 30% attack-like
+        is_attack = random.random() < 0.30
+
+        if is_attack:
+            src_ip = random.choice([
+                f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}",
+                "203.0.113.42", "198.51.100.1", "185.220.101.1",
+            ])
+            dst_ip = random.choice([
+                "192.168.1.10", "192.168.1.20", "10.0.0.5", "172.16.0.15",
+            ])
+            proto = random.choice(["TCP_SYN", "TCP_SUSPICIOUS", "UDP_SUSPICIOUS", "ICMP"])
+        else:
+            src_ip = random.choice([
+                "192.168.1.10", "192.168.1.20", "10.0.0.5", "172.16.0.15",
+            ])
+            dst_ip = random.choice([
+                "8.8.8.8", "1.1.1.1", "192.168.1.1", "172.217.0.46",
+            ])
+            proto = random.choice(["TCP_NORMAL", "UDP_DNS", "TCP_HTTPS", "TCP_HTTP"])
+
+        if proto == "TCP_SYN":
+            sport = random.randint(1024, 65535)
+            dport = random.choice(list(SUSPICIOUS_PORTS) + [22, 445, 135, 3389])
+            pkt = IP(src=src_ip, dst=dst_ip) / TCP(sport=sport, dport=dport, flags="S")
+        elif proto == "TCP_SUSPICIOUS":
+            sport = random.randint(1024, 65535)
+            dport = random.choice(list(SUSPICIOUS_PORTS))
+            pkt = IP(src=src_ip, dst=dst_ip) / TCP(sport=sport, dport=dport, flags="PA") / Raw(load=b"X" * random.randint(100, 5000))
+        elif proto == "UDP_SUSPICIOUS":
+            sport = random.randint(1024, 65535)
+            dport = random.choice(list(SUSPICIOUS_PORTS) + [0])
+            pkt = IP(src=src_ip, dst=dst_ip) / UDP(sport=sport, dport=dport) / Raw(load=b"\x00" * random.randint(500, 10000))
+        elif proto == "ICMP":
+            pkt = IP(src=src_ip, dst=dst_ip) / ICMP() / Raw(load=b"\x00" * random.randint(64, 2000))
+        elif proto == "TCP_HTTPS":
+            sport = random.randint(1024, 65535)
+            pkt = IP(src=src_ip, dst=dst_ip) / TCP(sport=sport, dport=443, flags="PA") / Raw(load=b"\x16\x03\x01" + b"\x00" * random.randint(100, 1400))
+        elif proto == "TCP_HTTP":
+            sport = random.randint(1024, 65535)
+            pkt = IP(src=src_ip, dst=dst_ip) / TCP(sport=sport, dport=80, flags="PA") / Raw(load=b"GET / HTTP/1.1\r\n" + b"\x00" * random.randint(50, 500))
+        elif proto == "UDP_DNS":
+            sport = random.randint(1024, 65535)
+            pkt = IP(src=src_ip, dst=dst_ip) / UDP(sport=sport, dport=53) / Raw(load=b"\x00" * random.randint(30, 128))
+        else:  # TCP_NORMAL
+            sport = random.randint(1024, 65535)
+            dport = random.choice([80, 443, 8080, 3306])
+            pkt = IP(src=src_ip, dst=dst_ip) / TCP(sport=sport, dport=dport, flags="A") / Raw(load=b"\x00" * random.randint(64, 1500))
+
+        return pkt
+
+    def _pure_simulation_loop(self):
+        """Fallback simulation when Scapy is not installed at all."""
+        while self._running:
+            try:
+                detection = self._generate_pure_synthetic_detection()
+                with self._lock:
+                    self.detections.append(detection)
+                    self.stats["packets_processed"] += 1
+                    if detection["is_malicious"]:
+                        self.stats["attacks_detected"] += 1
+                    if detection["rl_action"] == "allow":
+                        self.stats["packets_allowed"] += 1
+                    else:
+                        self.stats["packets_blocked"] += 1
+
+                if self.db_callback:
+                    try:
+                        self.db_callback(detection)
+                    except Exception:
+                        pass
+
+                if self.stats["packets_processed"] % 100 == 0:
+                    self.rl_agent.save()
+
+                time.sleep(random.uniform(0.5, 2.0))
+            except Exception as e:
+                print(f"[DetectionAgent] Pure simulation error: {e}")
+                time.sleep(1)
+
+    def _generate_pure_synthetic_detection(self):
+        """Generate a synthetic detection without Scapy."""
+        is_attack = random.random() < 0.30
+
+        if is_attack:
+            src_ip = f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
+            dst_ip = random.choice(["192.168.1.10", "10.0.0.5", "172.16.0.15"])
+            protocol = random.choice(["TCP", "UDP", "ICMP"])
+            dport = random.choice(list(SUSPICIOUS_PORTS) + [445, 135, 3389])
+            sport = random.randint(1024, 65535)
+            size = random.choice([40, 60, random.randint(5000, 65535)])
+            reason = random.choice(["syn_scan", "suspicious_port", "external_intrusion", "rf_flagged"])
+            ip_type = "external_to_internal"
+            port_type = "suspicious"
+        else:
+            src_ip = random.choice(["192.168.1.10", "192.168.1.20", "10.0.0.5"])
+            dst_ip = random.choice(["8.8.8.8", "1.1.1.1", "192.168.1.1"])
+            protocol = random.choice(["TCP", "UDP"])
+            dport = random.choice([80, 443, 53, 22, 8080])
+            sport = random.randint(1024, 65535)
+            size = random.randint(64, 1500)
+            reason = random.choice(["normal_service", "internal_traffic", "benign"])
+            ip_type = random.choice(["internal", "internal_to_external"])
+            port_type = "well_known"
+
+        state = (reason, ip_type, protocol, port_type)
+        action, was_exploration = self.rl_agent.choose_action(state)
+
+        # Reward
+        if action == "block" and is_attack:
+            reward = 1.0
+        elif action == "allow" and not is_attack:
+            reward = 1.0
+        else:
+            reward = -1.0
+
+        self.rl_agent.update(state, action, reward)
+
+        severity = "High" if is_attack else "Low"
+        if action == "block" and not is_attack:
+            severity = "Medium"
+
+        rf_confidence = random.uniform(0.55, 0.95)
+
+        return {
+            "timestamp": time.time() * 1000,
+            "src_ip": src_ip,
+            "dst_ip": dst_ip,
+            "protocol": protocol,
+            "sport": sport,
+            "dport": dport,
+            "size": size,
+            "flags": "",
+            "rf_prediction": "attack" if is_attack else "normal",
+            "rf_confidence": round(rf_confidence, 3),
+            "rl_state": "|".join(str(s) for s in state),
+            "rl_action": action,
+            "rl_reward": reward,
+            "was_exploration": was_exploration,
+            "is_malicious": is_attack,
+            "severity": severity,
+            "reason": reason,
+            "epsilon": round(self.rl_agent.epsilon, 4),
+        }

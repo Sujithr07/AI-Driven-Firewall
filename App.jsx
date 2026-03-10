@@ -3,6 +3,7 @@ import Login from './Login';
 import NetworkTrafficView from './NetworkTrafficView';
 import ImmutableLogsView from './ImmutableLogsView';
 import SettingsView from './SettingsView';
+import DetectionAgentView, { BrainIcon } from './DetectionAgentView';
 
 // --- Icon Components (using lucide-react equivalent SVGs) ---
 const ServerIcon = (props) => (
@@ -50,6 +51,7 @@ const Sidebar = ({ currentPage, setCurrentPage }) => {
     const navItems = [
         { id: 'dashboard', label: 'Dashboard', icon: ZapIcon, active: currentPage === 'dashboard' },
         { id: 'network_traffic', label: 'Network Traffic', icon: ServerIcon, active: currentPage === 'network_traffic' },
+        { id: 'detection_agent', label: 'Detection Agent', icon: BrainIcon, active: currentPage === 'detection_agent' },
         { id: 'threat_detection', label: 'Threat Detection', icon: ShieldCheckIcon, active: currentPage === 'threat_detection' },
         { id: 'firewall_rules', label: 'Firewall Rules', icon: LockIcon, active: currentPage === 'firewall_rules' },
         { id: 'immutable_logs', label: 'Immutable Logs', icon: FileTextIcon, active: currentPage === 'immutable_logs' },
@@ -559,6 +561,8 @@ const App = () => {
         switch (currentPage) {
             case 'dashboard':
                 return <DashboardView alerts={alerts} metrics={metrics} user={user} />;
+            case 'detection_agent':
+                return <DetectionAgentView token={token} />;
             case 'threat_detection':
                 return <ThreatDetectionView currentLog={currentLog} />;
             case 'firewall_rules':
