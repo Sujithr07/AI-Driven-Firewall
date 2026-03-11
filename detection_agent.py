@@ -49,6 +49,12 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
+try:
+    from lstm_detector import LSTMDetector
+    LSTM_AVAILABLE = True
+except ImportError:
+    LSTM_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Known malicious / suspicious IP ranges and ports (for labeling)
@@ -749,6 +755,7 @@ class DetectionAgent:
     def __init__(self, db_callback=None):
         self.classifier = EnsemblePredictor()
         self.rl_agent = DQNAgent()
+        self.lstm = LSTMDetector() if LSTM_AVAILABLE else None
         self.db_callback = db_callback  # Function to save detections to DB
 
         self._running = False
@@ -797,6 +804,8 @@ class DetectionAgent:
         # Persist learned data
         self.classifier.save()
         self.rl_agent.save()
+        if self.lstm is not None:
+            self.lstm.save()
         return {"status": "stopped"}
 
     def is_running(self):
@@ -823,6 +832,9 @@ class DetectionAgent:
             "rl_stats": self.rl_agent.get_stats(),
             "scapy_available": SCAPY_AVAILABLE,
             "sklearn_available": SKLEARN_AVAILABLE,
+            "xgboost_available": XGBOOST_AVAILABLE,
+            "torch_available": TORCH_AVAILABLE,
+            "lstm_available": LSTM_AVAILABLE,
         }
 
     # ---- internal ----
@@ -910,18 +922,28 @@ class DetectionAgent:
         else:
             reward = -1.0  # False negative — allowed an attack
 
-        # Step 5: Update Q-table
+        # Step 5: Update DQN
         self.rl_agent.update(state, action, reward)
 
         # Step 6: Feed back to classifier for continuous learning
         true_label = 1 if is_actually_malicious else 0
         self.classifier.add_sample(numeric, true_label)
 
+        # Step 6b: Feed LSTM sequential detector
+        lstm_anomaly = False
+        lstm_score = 0.0
+        if self.lstm is not None:
+            self.lstm.add_packet(numeric, label=true_label)
+            lstm_anomaly, lstm_score = self.lstm.predict_current()
+
         # Step 7: Record detection
         severity = "High" if is_actually_malicious else ("Medium" if rf_confidence < 0.7 else "Low")
         if action == "block" and is_actually_malicious:
             severity = "High"
         elif action == "block" and not is_actually_malicious:
+            severity = "Medium"
+        # Escalate if LSTM detects sequential anomaly
+        if lstm_anomaly and severity == "Low":
             severity = "Medium"
 
         detection = {
@@ -943,6 +965,8 @@ class DetectionAgent:
             "severity": severity,
             "reason": reason,
             "epsilon": round(self.rl_agent.epsilon, 4),
+            "lstm_anomaly": lstm_anomaly,
+            "lstm_score": lstm_score,
         }
 
         with self._lock:
@@ -966,6 +990,8 @@ class DetectionAgent:
         if self.stats["packets_processed"] % 100 == 0:
             self.classifier.save()
             self.rl_agent.save()
+            if self.lstm is not None:
+                self.lstm.save()
 
     def _heuristic_ground_truth(self, features, rf_pred, rf_confidence):
         """
@@ -1203,6 +1229,17 @@ class DetectionAgent:
         if action == "block" and not is_attack:
             severity = "Medium"
 
+        # LSTM in synthetic mode
+        lstm_anomaly = False
+        lstm_score = 0.0
+        if self.lstm is not None:
+            numeric = [0]*11  # placeholder features for pure synthetic
+            self.lstm.add_packet(numeric, label=1 if is_attack else 0)
+            lstm_anomaly, lstm_score = self.lstm.predict_current()
+
+        if lstm_anomaly and severity == "Low":
+            severity = "Medium"
+
         return {
             "timestamp": time.time() * 1000,
             "src_ip": src_ip,
@@ -1222,4 +1259,6 @@ class DetectionAgent:
             "severity": severity,
             "reason": reason,
             "epsilon": round(self.rl_agent.epsilon, 4),
+            "lstm_anomaly": lstm_anomaly,
+            "lstm_score": lstm_score,
         }
