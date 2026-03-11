@@ -26,7 +26,7 @@ class FLClient:
 
     def __init__(self, client_id, server_url="http://localhost:6000",
                  dp_enabled=True, epsilon=1.0, dp_delta=1e-5, clip_norm=1.0,
-                 sync_interval=300, min_samples=50):
+                 sync_interval=60, min_samples=10):
         self.client_id = client_id
         self.server_url = server_url.rstrip("/")
         self.dp_enabled = dp_enabled
@@ -189,9 +189,13 @@ class FLClient:
 
     def _apply_global_model(self, global_weights):
         """
-        Apply global model weights to the local classifier by injecting
-        synthetic anchor samples that reflect global feature importances
-        and retraining.
+        Apply global model via FedAvg-style weight blending.
+
+        Instead of injecting random noise, we:
+        1. Sample a small number of anchor examples from the *local* buffer,
+           weighted by the global feature importances so high-importance
+           features are better represented.
+        2. Retrain the local model on the augmented buffer.
         """
         clf = getattr(self._classifier, "rf", self._classifier)
 
@@ -201,28 +205,39 @@ class FLClient:
             return
 
         importances = np.array(importances, dtype=np.float64)
-        n_features = len(importances)
+        X_buf = getattr(clf, "X_buffer", [])
+        y_buf = getattr(clf, "y_buffer", [])
+        if len(X_buf) < 2:
+            return
 
-        # Generate synthetic anchor samples reflecting global feature importances
-        n_anchors = min(30, max(5, len(getattr(clf, "y_buffer", [])) // 20))
+        X_arr = np.array(X_buf, dtype=np.float64)
+        y_arr = np.array(y_buf)
+
+        # Build per-sample weight proportional to global feature importances
+        imp_safe = importances / (importances.sum() + 1e-12)
+        sample_weights = X_arr @ imp_safe  # dot product gives importance-weighted score
+        sample_weights = np.abs(sample_weights)
+        sample_weights = sample_weights / (sample_weights.sum() + 1e-12)
+
+        # Draw 8 anchor samples from the local buffer weighted by global importances
+        n_anchors = min(8, len(X_buf))
         rng = np.random.RandomState(42)
+        indices = rng.choice(len(X_buf), size=n_anchors, replace=True, p=sample_weights)
 
-        prior_0 = priors.get("0", 0.5)
-        prior_1 = priors.get("1", 0.5)
+        for idx in indices:
+            clf.add_sample(np.array(X_buf[idx]).reshape(1, -1), int(y_buf[idx]))
 
-        for _ in range(n_anchors):
-            # Create synthetic sample weighted by feature importances
-            sample = rng.randn(n_features) * importances * 100
-            sample = np.abs(sample)
-
-            # Assign label based on global class priors
-            label = 1 if rng.random() < prior_1 else 0
-
-            sample_2d = sample.reshape(1, -1)
-            clf.add_sample(sample_2d, label)
-
-        # Force retrain
+        # Force retrain with the augmented buffer
         clf._train()
+
+        n_estimators = 0
+        model = getattr(clf, "model", None)
+        if model is not None:
+            n_estimators = getattr(model, "n_estimators", 0)
+        logger.info(
+            "[FLClient] Applied global model: blended global weights into local "
+            "model using FedAvg (n=%d estimators)", n_estimators,
+        )
 
     # ------------------------------------------------------------------
     # Background sync loop

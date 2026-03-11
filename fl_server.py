@@ -30,7 +30,7 @@ _global_model_version = 0
 _global_model_timestamp = None
 _round_number = 0
 _round_history = []          # list of {round, timestamp, clients, total_samples}
-MIN_CLIENTS = 2
+MIN_CLIENTS = 1
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +223,12 @@ def fl_rounds():
     """Return the full round history."""
     with _lock:
         return jsonify({"rounds": list(_round_history)})
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Health check endpoint used by app.py before connecting."""
+    return jsonify({"status": "ok", "clients": len(_client_updates)}), 200
 
 
 # ---------------------------------------------------------------------------

@@ -483,9 +483,21 @@ def _save_response_action_to_db(action_record):
 response_agent = ResponseAgent(dry_run=True, db_callback=_save_response_action_to_db)
 response_agent.start_self_healing()
 
+# Health-check FL server before enabling federated learning
+_fl_url = FL_SERVER_URL
+try:
+    _fl_resp = http_requests.get(f"{_fl_url}/health", timeout=3)
+    if _fl_resp.status_code != 200:
+        raise ConnectionError(f"HTTP {_fl_resp.status_code}")
+    print(f"[FL] FL server reachable at {_fl_url}")
+except Exception as _fl_err:
+    print(f"WARNING: FL server not reachable at {_fl_url}. "
+          f"Federated learning will be disabled. ({_fl_err})")
+    _fl_url = None
+
 detection_agent = DetectionAgent(
     db_callback=_save_detection_to_db,
-    fl_server_url=FL_SERVER_URL,
+    fl_server_url=_fl_url,
     client_id=os.getenv("FL_CLIENT_ID", None),
     response_agent=response_agent,
 )

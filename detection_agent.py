@@ -235,6 +235,25 @@ class TrafficClassifier:
             except Exception as e:
                 print(f"[TrafficClassifier] Failed to load model: {e}")
 
+        # Try seed model as fallback for federated learning bootstrap
+        import shutil
+        seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rf_model_seed.pkl")
+        if os.path.exists(seed_path):
+            try:
+                shutil.copy2(seed_path, self.MODEL_PATH)
+                with open(self.MODEL_PATH, "rb") as f:
+                    saved = pickle.load(f)
+                if isinstance(saved, dict):
+                    self.model = saved["model"]
+                    self.X_buffer = saved.get("X_buffer", [])
+                    self.y_buffer = saved.get("y_buffer", [])
+                else:
+                    self.model = saved
+                print("[TrafficClassifier] Loaded seed model as starting point for federated learning.")
+                return
+            except Exception as e:
+                print(f"[TrafficClassifier] Failed to load seed model: {e}")
+
         # Bootstrap with synthetic training data so agent works from the start
         print("[TrafficClassifier] No pre-trained model found, generating synthetic baseline...")
         self._generate_synthetic_baseline()
