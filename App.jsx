@@ -4,6 +4,7 @@ import NetworkTrafficView from './NetworkTrafficView';
 import ImmutableLogsView from './ImmutableLogsView';
 import SettingsView from './SettingsView';
 import DetectionAgentView, { BrainIcon } from './DetectionAgentView';
+import XAIDashboardView from './XAIDashboardView';
 import FederationView from './FederationView';
 
 // --- Icon Components (using lucide-react equivalent SVGs) ---
@@ -56,6 +57,7 @@ const Sidebar = ({ currentPage, setCurrentPage }) => {
         { id: 'dashboard', label: 'Dashboard', icon: ZapIcon, active: currentPage === 'dashboard' },
         { id: 'network_traffic', label: 'Network Traffic', icon: ServerIcon, active: currentPage === 'network_traffic' },
         { id: 'detection_agent', label: 'Detection Agent', icon: BrainIcon, active: currentPage === 'detection_agent' },
+        { id: 'xai_dashboard', label: 'XAI Explain', icon: ShieldCheckIcon, active: currentPage === 'xai_dashboard' },
         { id: 'federation', label: 'Federation', icon: GlobeIcon, active: currentPage === 'federation' },
         { id: 'threat_detection', label: 'Threat Detection', icon: ShieldCheckIcon, active: currentPage === 'threat_detection' },
         { id: 'firewall_rules', label: 'Firewall Rules', icon: LockIcon, active: currentPage === 'firewall_rules' },
@@ -508,19 +510,25 @@ const App = () => {
     useEffect(() => {
         if (isLoading || backendError) return; // Wait until initial data is loaded and backend is available
 
+        let cancelled = false;
+        let currentTimeoutId = null;
+
         // Use a randomized interval between 15-25 seconds to simulate realistic network traffic patterns
         const getRandomInterval = () => Math.floor(Math.random() * 10000) + 15000; // 15-25 seconds
         
         const scheduleNext = () => {
-            const timeoutId = setTimeout(() => {
+            currentTimeoutId = setTimeout(() => {
+                if (cancelled) return;
                 simulateTrafficAttempt();
-                scheduleNext(); // Schedule the next one
+                scheduleNext();
             }, getRandomInterval());
-            return timeoutId;
         };
 
-        const timeoutId = scheduleNext();
-        return () => clearTimeout(timeoutId);
+        scheduleNext();
+        return () => {
+            cancelled = true;
+            if (currentTimeoutId) clearTimeout(currentTimeoutId);
+        };
     }, [simulateTrafficAttempt, isLoading, backendError]); // Added backendError dependency
 
     // --- View Renderer ---
@@ -567,7 +575,9 @@ const App = () => {
             case 'dashboard':
                 return <DashboardView alerts={alerts} metrics={metrics} user={user} />;
             case 'detection_agent':
-                return <DetectionAgentView token={token} />;
+                return <DetectionAgentView token={token} onNavigateToXAI={() => setCurrentPage('xai_dashboard')} />;
+            case 'xai_dashboard':
+                return <XAIDashboardView token={token} />;
             case 'federation':
                 return <FederationView token={token} />;
             case 'threat_detection':

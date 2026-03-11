@@ -6,6 +6,10 @@ export default defineConfig({
   plugins: [react(), tailwindcss()], // <-- ADDED tailwindcss() TO PLUGINS ARRAY
   server: {
     // The port for the web browser (Frontend)
-    port: 5173, 
+    port: 5173,
+    watch: {
+      // Ignore Python/ML files written by the detection agent to prevent full-page reloads
+      ignored: ['**/*.py', '**/*.pyw', '**/*.pkl', '**/*.pt', '**/q_table.json', '**/__pycache__/**', '**/.venv/**'],
+    },
   },
 });

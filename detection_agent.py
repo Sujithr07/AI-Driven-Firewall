@@ -755,11 +755,12 @@ class DetectionAgent:
       5. Computes reward and updates Q-table
     """
 
-    def __init__(self, db_callback=None, fl_server_url=None, client_id=None):
+    def __init__(self, db_callback=None, fl_server_url=None, client_id=None, response_agent=None):
         self.classifier = EnsemblePredictor()
         self.rl_agent = DQNAgent()
         self.lstm = LSTMDetector() if LSTM_AVAILABLE else None
         self.db_callback = db_callback  # Function to save detections to DB
+        self.response_agent = response_agent
 
         self._running = False
         self._thread = None
@@ -927,6 +928,18 @@ class DetectionAgent:
         # Ground truth heuristic: combine RF prediction with feature-based rules
         is_actually_malicious = self._heuristic_ground_truth(features, rf_pred, rf_confidence)
 
+        # Step 4b: Response Agent enforcement
+        response_result = {}
+        if self.response_agent:
+            response_result = self.response_agent.execute({
+                "src_ip": features["src_ip"],
+                "rf_confidence": rf_confidence,
+                "reason": reason,
+                "is_malicious": is_actually_malicious,
+                "rl_action": action,
+            })
+            self.response_agent._update_fp_tracker(features["src_ip"], rf_confidence)
+
         if action == "block" and is_actually_malicious:
             reward = 1.0   # Correctly blocked an attack
         elif action == "allow" and not is_actually_malicious:
@@ -981,6 +994,8 @@ class DetectionAgent:
             "epsilon": round(self.rl_agent.epsilon, 4),
             "lstm_anomaly": lstm_anomaly,
             "lstm_score": lstm_score,
+            "response_action": response_result.get("response_action", "none"),
+            "response_rule_type": response_result.get("rule_type", "none"),
         }
 
         with self._lock:
@@ -1254,6 +1269,18 @@ class DetectionAgent:
         if lstm_anomaly and severity == "Low":
             severity = "Medium"
 
+        # Response Agent enforcement
+        response_result = {}
+        if self.response_agent:
+            response_result = self.response_agent.execute({
+                "src_ip": src_ip,
+                "rf_confidence": rf_confidence,
+                "reason": reason,
+                "is_malicious": is_attack,
+                "rl_action": action,
+            })
+            self.response_agent._update_fp_tracker(src_ip, rf_confidence)
+
         return {
             "timestamp": time.time() * 1000,
             "src_ip": src_ip,
@@ -1275,4 +1302,6 @@ class DetectionAgent:
             "epsilon": round(self.rl_agent.epsilon, 4),
             "lstm_anomaly": lstm_anomaly,
             "lstm_score": lstm_score,
+            "response_action": response_result.get("response_action", "none"),
+            "response_rule_type": response_result.get("rule_type", "none"),
         }
