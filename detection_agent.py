@@ -35,6 +35,20 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
 
+try:
+    import xgboost as xgb
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Known malicious / suspicious IP ranges and ports (for labeling)
@@ -195,19 +209,25 @@ class TrafficClassifier:
         self._load_or_init()
 
     def _load_or_init(self):
-        """Load saved model or initialize a new one with synthetic baseline data."""
+        """Load a pre-trained model from disk, or fall back to synthetic baseline."""
         if os.path.exists(self.MODEL_PATH):
             try:
                 with open(self.MODEL_PATH, "rb") as f:
                     saved = pickle.load(f)
-                self.model = saved["model"]
-                self.X_buffer = saved.get("X_buffer", [])
-                self.y_buffer = saved.get("y_buffer", [])
+                if isinstance(saved, dict):
+                    self.model = saved["model"]
+                    self.X_buffer = saved.get("X_buffer", [])
+                    self.y_buffer = saved.get("y_buffer", [])
+                else:
+                    # Bare sklearn model (e.g. saved directly by train_model.py)
+                    self.model = saved
+                print(f"[TrafficClassifier] Loaded pre-trained model from {self.MODEL_PATH}")
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[TrafficClassifier] Failed to load model: {e}")
 
         # Bootstrap with synthetic training data so agent works from the start
+        print("[TrafficClassifier] No pre-trained model found, generating synthetic baseline...")
         self._generate_synthetic_baseline()
 
     def _generate_synthetic_baseline(self):
@@ -294,130 +314,412 @@ class TrafficClassifier:
 
 
 # ---------------------------------------------------------------------------
-# Reinforcement Learning Agent (Q-Learning with epsilon-greedy)
+# XGBoost Classifier (ensemble partner for RandomForest)
 # ---------------------------------------------------------------------------
 
-class RLAgent:
+class XGBoostClassifier:
     """
-    Q-Learning agent for network traffic decision making.
+    Gradient-boosted tree classifier that runs alongside the RandomForest.
+    Its prediction is averaged with the RF prediction for a more robust
+    ensemble score.
+    """
 
-    State:  (reason, ip_type, protocol, port_type)
-    Action: "allow" or "block"
+    MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xgb_model.pkl")
+
+    def __init__(self):
+        self.model = None
+        self.X_buffer = []
+        self.y_buffer = []
+        self.min_samples = 30
+        self._load_or_init()
+
+    def _load_or_init(self):
+        if os.path.exists(self.MODEL_PATH):
+            try:
+                with open(self.MODEL_PATH, "rb") as f:
+                    saved = pickle.load(f)
+                if isinstance(saved, dict):
+                    self.model = saved["model"]
+                    self.X_buffer = saved.get("X_buffer", [])
+                    self.y_buffer = saved.get("y_buffer", [])
+                else:
+                    self.model = saved
+                print(f"[XGBoostClassifier] Loaded model from {self.MODEL_PATH}")
+                return
+            except Exception as e:
+                print(f"[XGBoostClassifier] Failed to load model: {e}")
+        self._generate_synthetic_baseline()
+
+    def _generate_synthetic_baseline(self):
+        rng = random.Random(42)
+        X, y = [], []
+        for _ in range(200):
+            proto = rng.choice([6, 17])
+            sport = rng.randint(1024, 65535)
+            dport = rng.choice([80, 443, 53, 22, 8080, 3306])
+            size = rng.randint(64, 1500)
+            X.append([proto, sport, dport, size, 1, 0, 0, 0, 0, 0, 1])
+            y.append(0)
+        for _ in range(100):
+            proto = rng.choice([6, 17, 1])
+            sport = rng.randint(1024, 65535)
+            dport = rng.choice(list(SUSPICIOUS_PORTS) + [0, 445, 135, 139])
+            size = rng.choice([0, 40, 60, rng.randint(5000, 65535)])
+            has_syn = rng.choice([0, 1, 1])
+            X.append([proto, sport, dport, size, 0, 1, has_syn, 0, 0, 1, 0])
+            y.append(1)
+        self.X_buffer = X
+        self.y_buffer = y
+        self._train()
+
+    def _train(self):
+        if not XGBOOST_AVAILABLE or len(self.X_buffer) < self.min_samples:
+            return
+        X = np.array(self.X_buffer)
+        y = np.array(self.y_buffer)
+        self.model = xgb.XGBClassifier(
+            n_estimators=80,
+            max_depth=8,
+            learning_rate=0.1,
+            use_label_encoder=False,
+            eval_metric="logloss",
+            random_state=42,
+            verbosity=0,
+        )
+        self.model.fit(X, y)
+
+    def predict(self, numeric_features):
+        """Returns (prediction, confidence)."""
+        if self.model is None:
+            return 0, 0.5
+        pred = int(self.model.predict(numeric_features)[0])
+        proba = self.model.predict_proba(numeric_features)[0]
+        return pred, float(max(proba))
+
+    def add_sample(self, numeric_features, label):
+        self.X_buffer.append(numeric_features.flatten().tolist())
+        self.y_buffer.append(label)
+        max_buffer = 5000
+        if len(self.X_buffer) > max_buffer:
+            self.X_buffer = self.X_buffer[-max_buffer:]
+            self.y_buffer = self.y_buffer[-max_buffer:]
+        if len(self.X_buffer) % 50 == 0:
+            self._train()
+
+    def save(self):
+        try:
+            with open(self.MODEL_PATH, "wb") as f:
+                pickle.dump({
+                    "model": self.model,
+                    "X_buffer": self.X_buffer[-2000:],
+                    "y_buffer": self.y_buffer[-2000:],
+                }, f)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Ensemble Predictor — combines RF + XGBoost
+# ---------------------------------------------------------------------------
+
+class EnsemblePredictor:
+    """Averages predictions from RandomForest and XGBoost."""
+
+    def __init__(self):
+        self.rf = TrafficClassifier()
+        self.xgb = XGBoostClassifier()
+
+    def predict(self, numeric_features):
+        rf_pred, rf_conf = self.rf.predict(numeric_features)
+        xgb_pred, xgb_conf = self.xgb.predict(numeric_features)
+
+        # Weighted average of predicted probabilities
+        rf_attack_prob  = rf_conf  if rf_pred  == 1 else 1.0 - rf_conf
+        xgb_attack_prob = xgb_conf if xgb_pred == 1 else 1.0 - xgb_conf
+
+        avg_attack_prob = 0.5 * rf_attack_prob + 0.5 * xgb_attack_prob
+        pred = 1 if avg_attack_prob >= 0.5 else 0
+        confidence = avg_attack_prob if pred == 1 else 1.0 - avg_attack_prob
+        return pred, round(confidence, 4)
+
+    def add_sample(self, numeric_features, label):
+        self.rf.add_sample(numeric_features, label)
+        self.xgb.add_sample(numeric_features, label)
+
+    def save(self):
+        self.rf.save()
+        self.xgb.save()
+
+
+# ---------------------------------------------------------------------------
+# DQN Agent — Deep Q-Network with experience replay
+# ---------------------------------------------------------------------------
+
+# State encoding maps for deterministic integer encoding
+_REASON_MAP = {
+    "syn_scan": 0, "suspicious_port": 1, "external_intrusion": 2,
+    "rf_flagged": 3, "normal_service": 4, "internal_traffic": 5, "benign": 6,
+}
+_IP_TYPE_MAP = {
+    "external_to_internal": 0, "internal_to_external": 1,
+    "internal": 2, "external": 3,
+}
+_PROTO_MAP = {"TCP": 0, "UDP": 1, "ICMP": 2}
+_PORT_TYPE_MAP = {"suspicious": 0, "well_known": 1, "high": 2, "low_unknown": 3}
+_CONF_MAP = {"very_high": 0, "high": 1, "medium": 2, "low": 3}
+_SIZE_MAP = {"tiny": 0, "small": 1, "normal": 2, "large": 3}
+_FLAG_MAP = {"none": 0, "S": 1, "F": 2, "R": 3, "SF": 4, "SR": 5, "FR": 6, "SFR": 7}
+
+STATE_DIM = 7   # length of encoded state vector
+ACTION_DIM = 2  # allow=0, block=1
+
+
+def _encode_state(state_tuple):
+    """Convert a 7-token state tuple into a float32 numpy vector."""
+    reason, ip_type, protocol, port_type, conf_lvl, size_cat, flag_sig = state_tuple
+    vec = np.array([
+        _REASON_MAP.get(reason, 6),
+        _IP_TYPE_MAP.get(ip_type, 3),
+        _PROTO_MAP.get(protocol, 2),
+        _PORT_TYPE_MAP.get(port_type, 3),
+        _CONF_MAP.get(conf_lvl, 3),
+        _SIZE_MAP.get(size_cat, 2),
+        _FLAG_MAP.get(flag_sig, 0),
+    ], dtype=np.float32)
+    return vec
+
+
+if TORCH_AVAILABLE:
+    class _QNetwork(nn.Module):
+        """Small MLP that maps state -> Q-values for each action."""
+        def __init__(self, state_dim=STATE_DIM, action_dim=ACTION_DIM, hidden=64):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(state_dim, hidden),
+                nn.ReLU(),
+                nn.Linear(hidden, hidden),
+                nn.ReLU(),
+                nn.Linear(hidden, action_dim),
+            )
+
+        def forward(self, x):
+            return self.net(x)
+
+
+class DQNAgent:
+    """
+    Deep Q-Network agent with experience replay.
+
+    Falls back to simple Q-table logic when PyTorch is unavailable.
     """
 
     ACTIONS = ["allow", "block"]
+    MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dqn_model.pt")
     Q_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_table.json")
 
-    def __init__(self, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.05):
-        self.alpha = alpha          # Learning rate
-        self.gamma = gamma          # Discount factor (not used in single-step but kept for extension)
-        self.epsilon = epsilon      # Exploration rate
+    def __init__(self, alpha=1e-3, gamma=0.9, epsilon=1.0,
+                 epsilon_decay=0.995, epsilon_min=0.05,
+                 replay_size=5000, batch_size=64):
+        self.gamma = gamma
+        self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
-        self.q_table = {}           # {state_str: {"allow": Q, "block": Q}}
+        self.batch_size = batch_size
         self.total_decisions = 0
         self.correct_decisions = 0
-        self.episode_rewards = []   # Track recent rewards
-        self._load()
+        self.episode_rewards = []
 
-    def _state_key(self, state_tuple):
-        """Convert state tuple to string key for Q-table."""
-        return "|".join(str(s) for s in state_tuple)
+        # Experience replay buffer: list of (state, action_idx, reward, next_state)
+        self._replay = collections.deque(maxlen=replay_size)
 
-    def _ensure_state(self, key):
-        """Initialize Q-values for unseen state."""
-        if key not in self.q_table:
-            self.q_table[key] = {"allow": 0.0, "block": 0.0}
+        if TORCH_AVAILABLE:
+            self._policy_net = _QNetwork()
+            self._target_net = _QNetwork()
+            self._target_net.load_state_dict(self._policy_net.state_dict())
+            self._optimizer = optim.Adam(self._policy_net.parameters(), lr=alpha)
+            self._update_target_every = 200
+            self._steps = 0
+            self._load_torch()
+        else:
+            # Thin Q-table fallback
+            self.q_table = {}
+            self.alpha = 0.1
+            self._load_qtable()
+
+    # ----- action selection -----
 
     def choose_action(self, state_tuple):
-        """
-        Epsilon-greedy action selection.
-        Returns (action, was_exploration).
-        """
-        key = self._state_key(state_tuple)
-        self._ensure_state(key)
-
         if random.random() < self.epsilon:
             action = random.choice(self.ACTIONS)
-            return action, True  # exploration
+            return action, True
+
+        if TORCH_AVAILABLE:
+            state_t = torch.tensor(_encode_state(state_tuple)).unsqueeze(0)
+            with torch.no_grad():
+                q_vals = self._policy_net(state_t).squeeze(0)
+            action_idx = int(q_vals.argmax().item())
         else:
-            q_vals = self.q_table[key]
-            if q_vals["allow"] == q_vals["block"]:
-                action = random.choice(self.ACTIONS)
-            else:
-                action = max(q_vals, key=q_vals.get)
-            return action, False  # exploitation
+            key = "|".join(str(s) for s in state_tuple)
+            if key not in self.q_table:
+                self.q_table[key] = {"allow": 0.0, "block": 0.0}
+            q = self.q_table[key]
+            action_idx = 1 if q["block"] > q["allow"] else (0 if q["allow"] > q["block"] else random.randint(0, 1))
 
-    def update(self, state_tuple, action, reward):
-        """
-        Update Q-table: Q[s][a] = old + alpha * (reward - old)
-        """
-        key = self._state_key(state_tuple)
-        self._ensure_state(key)
+        return self.ACTIONS[action_idx], False
 
-        old_value = self.q_table[key][action]
-        self.q_table[key][action] = old_value + self.alpha * (reward - old_value)
+    # ----- learning -----
 
-        # Decay epsilon
+    def update(self, state_tuple, action, reward, next_state_tuple=None):
+        action_idx = self.ACTIONS.index(action)
+
+        if TORCH_AVAILABLE:
+            next_state = state_tuple if next_state_tuple is None else next_state_tuple
+            self._replay.append((
+                _encode_state(state_tuple),
+                action_idx,
+                reward,
+                _encode_state(next_state),
+            ))
+            self._steps += 1
+            if len(self._replay) >= self.batch_size:
+                self._train_batch()
+            if self._steps % self._update_target_every == 0:
+                self._target_net.load_state_dict(self._policy_net.state_dict())
+        else:
+            key = "|".join(str(s) for s in state_tuple)
+            if key not in self.q_table:
+                self.q_table[key] = {"allow": 0.0, "block": 0.0}
+            old = self.q_table[key][action]
+            max_next = 0.0
+            if next_state_tuple is not None:
+                nk = "|".join(str(s) for s in next_state_tuple)
+                if nk not in self.q_table:
+                    self.q_table[nk] = {"allow": 0.0, "block": 0.0}
+                max_next = max(self.q_table[nk].values())
+            self.q_table[key][action] = old + self.alpha * (reward + self.gamma * max_next - old)
+
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-
-        # Track accuracy
         self.total_decisions += 1
         if reward > 0:
             self.correct_decisions += 1
-
         self.episode_rewards.append(reward)
-        # Keep only last 500 rewards
         if len(self.episode_rewards) > 500:
             self.episode_rewards = self.episode_rewards[-500:]
 
+    def _train_batch(self):
+        batch = random.sample(self._replay, self.batch_size)
+        states  = torch.tensor(np.array([b[0] for b in batch]))
+        actions = torch.tensor([b[1] for b in batch], dtype=torch.long).unsqueeze(1)
+        rewards = torch.tensor([b[2] for b in batch], dtype=torch.float32).unsqueeze(1)
+        next_s  = torch.tensor(np.array([b[3] for b in batch]))
+
+        q_values = self._policy_net(states).gather(1, actions)
+        with torch.no_grad():
+            max_next_q = self._target_net(next_s).max(1, keepdim=True)[0]
+        target = rewards + self.gamma * max_next_q
+
+        loss = nn.functional.mse_loss(q_values, target)
+        self._optimizer.zero_grad()
+        loss.backward()
+        self._optimizer.step()
+
+    # ----- stats (same interface as old RLAgent) -----
+
     def get_stats(self):
-        """Return current agent statistics."""
         accuracy = (self.correct_decisions / self.total_decisions * 100) if self.total_decisions > 0 else 0.0
-        recent_rewards = self.episode_rewards[-100:] if self.episode_rewards else []
-        avg_reward = sum(recent_rewards) / len(recent_rewards) if recent_rewards else 0.0
+        recent = self.episode_rewards[-100:] if self.episode_rewards else []
+        avg_rwd = sum(recent) / len(recent) if recent else 0.0
+        q_size = len(self.q_table) if not TORCH_AVAILABLE else self._steps
         return {
             "epsilon": round(self.epsilon, 4),
             "total_decisions": self.total_decisions,
             "correct_decisions": self.correct_decisions,
             "accuracy": round(accuracy, 2),
-            "avg_reward_last_100": round(avg_reward, 3),
-            "q_table_size": len(self.q_table),
+            "avg_reward_last_100": round(avg_rwd, 3),
+            "q_table_size": q_size,
             "exploration_rate": f"{self.epsilon * 100:.1f}%",
+            "backend": "DQN/PyTorch" if TORCH_AVAILABLE else "Q-table/fallback",
+            "replay_buffer": len(self._replay) if TORCH_AVAILABLE else 0,
         }
 
     def get_q_table_summary(self):
-        """Return a summary of Q-table entries sorted by confidence."""
-        entries = []
-        for state_key, q_vals in self.q_table.items():
-            best_action = max(q_vals, key=q_vals.get)
-            confidence = abs(q_vals["block"] - q_vals["allow"])
-            entries.append({
-                "state": state_key,
-                "allow_q": round(q_vals["allow"], 3),
-                "block_q": round(q_vals["block"], 3),
-                "best_action": best_action,
-                "confidence": round(confidence, 3),
-            })
-        entries.sort(key=lambda x: x["confidence"], reverse=True)
-        return entries[:50]  # Top 50
+        """Return Q-value summary.  DQN evaluates states on-the-fly."""
+        if TORCH_AVAILABLE:
+            # Sample recent replay states and evaluate them
+            if not self._replay:
+                return []
+            sample = list(self._replay)[-50:]
+            entries = []
+            for s_vec, a_idx, rwd, _ in sample:
+                s_t = torch.tensor(s_vec).unsqueeze(0)
+                with torch.no_grad():
+                    qv = self._policy_net(s_t).squeeze(0).tolist()
+                best = "block" if qv[1] > qv[0] else "allow"
+                entries.append({
+                    "state": "|".join(str(round(float(v))) for v in s_vec),
+                    "allow_q": round(qv[0], 3),
+                    "block_q": round(qv[1], 3),
+                    "best_action": best,
+                    "confidence": round(abs(qv[1] - qv[0]), 3),
+                })
+            entries.sort(key=lambda x: x["confidence"], reverse=True)
+            return entries[:50]
+        else:
+            entries = []
+            for sk, qv in self.q_table.items():
+                best = max(qv, key=qv.get)
+                entries.append({
+                    "state": sk,
+                    "allow_q": round(qv["allow"], 3),
+                    "block_q": round(qv["block"], 3),
+                    "best_action": best,
+                    "confidence": round(abs(qv["block"] - qv["allow"]), 3),
+                })
+            entries.sort(key=lambda x: x["confidence"], reverse=True)
+            return entries[:50]
+
+    # ----- persistence -----
 
     def save(self):
-        """Persist Q-table to disk."""
-        try:
-            data = {
-                "q_table": self.q_table,
-                "epsilon": self.epsilon,
-                "total_decisions": self.total_decisions,
-                "correct_decisions": self.correct_decisions,
-            }
-            with open(self.Q_TABLE_PATH, "w") as f:
-                json.dump(data, f)
-        except Exception:
-            pass
+        if TORCH_AVAILABLE:
+            try:
+                torch.save({
+                    "policy_state": self._policy_net.state_dict(),
+                    "target_state": self._target_net.state_dict(),
+                    "epsilon": self.epsilon,
+                    "total_decisions": self.total_decisions,
+                    "correct_decisions": self.correct_decisions,
+                    "steps": self._steps,
+                }, self.MODEL_PATH)
+            except Exception:
+                pass
+        else:
+            try:
+                with open(self.Q_TABLE_PATH, "w") as f:
+                    json.dump({
+                        "q_table": self.q_table,
+                        "epsilon": self.epsilon,
+                        "total_decisions": self.total_decisions,
+                        "correct_decisions": self.correct_decisions,
+                    }, f)
+            except Exception:
+                pass
 
-    def _load(self):
-        """Load Q-table from disk."""
+    def _load_torch(self):
+        if os.path.exists(self.MODEL_PATH):
+            try:
+                ckpt = torch.load(self.MODEL_PATH, map_location="cpu", weights_only=True)
+                self._policy_net.load_state_dict(ckpt["policy_state"])
+                self._target_net.load_state_dict(ckpt["target_state"])
+                self.epsilon = ckpt.get("epsilon", self.epsilon)
+                self.total_decisions = ckpt.get("total_decisions", 0)
+                self.correct_decisions = ckpt.get("correct_decisions", 0)
+                self._steps = ckpt.get("steps", 0)
+                print(f"[DQNAgent] Loaded PyTorch model from {self.MODEL_PATH}")
+            except Exception as e:
+                print(f"[DQNAgent] Could not load model: {e}")
+
+    def _load_qtable(self):
         if os.path.exists(self.Q_TABLE_PATH):
             try:
                 with open(self.Q_TABLE_PATH, "r") as f:
@@ -445,8 +747,8 @@ class DetectionAgent:
     """
 
     def __init__(self, db_callback=None):
-        self.classifier = TrafficClassifier()
-        self.rl_agent = RLAgent()
+        self.classifier = EnsemblePredictor()
+        self.rl_agent = DQNAgent()
         self.db_callback = db_callback  # Function to save detections to DB
 
         self._running = False
@@ -556,7 +858,41 @@ class DetectionAgent:
             else:
                 reason = "benign"
 
-        state = (reason, features["ip_type"], features["protocol"], features["port_type"])
+        # RF confidence level bucket
+        if rf_confidence >= 0.85:
+            rf_conf_level = "very_high"
+        elif rf_confidence >= 0.7:
+            rf_conf_level = "high"
+        elif rf_confidence >= 0.5:
+            rf_conf_level = "medium"
+        else:
+            rf_conf_level = "low"
+
+        # Packet size category
+        pkt_size = features["size"]
+        if pkt_size < 64:
+            size_cat = "tiny"
+        elif pkt_size <= 256:
+            size_cat = "small"
+        elif pkt_size <= 1500:
+            size_cat = "normal"
+        else:
+            size_cat = "large"
+
+        # Flag signature
+        flag_parts = []
+        if features["has_syn"]:
+            flag_parts.append("S")
+        if features["has_fin"]:
+            flag_parts.append("F")
+        if features["has_rst"]:
+            flag_parts.append("R")
+        flag_sig = "".join(flag_parts) if flag_parts else "none"
+
+        state = (
+            reason, features["ip_type"], features["protocol"], features["port_type"],
+            rf_conf_level, size_cat, flag_sig,
+        )
 
         # Step 3: RL agent chooses action
         action, was_exploration = self.rl_agent.choose_action(state)
@@ -822,7 +1158,35 @@ class DetectionAgent:
             ip_type = random.choice(["internal", "internal_to_external"])
             port_type = "well_known"
 
-        state = (reason, ip_type, protocol, port_type)
+        rf_confidence = random.uniform(0.55, 0.95)
+
+        # RF confidence level bucket
+        if rf_confidence >= 0.85:
+            rf_conf_level = "very_high"
+        elif rf_confidence >= 0.7:
+            rf_conf_level = "high"
+        elif rf_confidence >= 0.5:
+            rf_conf_level = "medium"
+        else:
+            rf_conf_level = "low"
+
+        # Packet size category
+        if size < 64:
+            size_cat = "tiny"
+        elif size <= 256:
+            size_cat = "small"
+        elif size <= 1500:
+            size_cat = "normal"
+        else:
+            size_cat = "large"
+
+        # Flag signature (no TCP flags in pure sim)
+        flag_sig = "none"
+
+        state = (
+            reason, ip_type, protocol, port_type,
+            rf_conf_level, size_cat, flag_sig,
+        )
         action, was_exploration = self.rl_agent.choose_action(state)
 
         # Reward
@@ -838,8 +1202,6 @@ class DetectionAgent:
         severity = "High" if is_attack else "Low"
         if action == "block" and not is_attack:
             severity = "Medium"
-
-        rf_confidence = random.uniform(0.55, 0.95)
 
         return {
             "timestamp": time.time() * 1000,

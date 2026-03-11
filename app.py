@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import time
 import random
 
-from detection_agent import DetectionAgent
+from detection_agent import DetectionAgent, TrafficClassifier
 
 # Load environment variables
 load_dotenv()
@@ -27,6 +27,9 @@ CORS(app, supports_credentials=True)
 
 # Initialize JWT
 jwt = JWTManager(app)
+
+# Shared RF classifier instance used by the simulation endpoint
+_traffic_classifier = TrafficClassifier()
 
 
 # ---------------------------------------------------------------------------
@@ -383,30 +386,47 @@ DEST_IPS = ['8.8.8.8', '1.1.1.1', '192.168.1.1', '10.0.0.1', '172.16.0.1']
 # --- Core AI/ZT Logic ---
 
 def classify_traffic(traffic):
-    """Simulates AI/ML Dynamic Threat Detection with realistic distribution."""
-    base_score = 0.3  # Start lower for more realistic distribution
-    
-    # Port-based risk assessment
-    if traffic['port'] < 1024 and traffic['protocol'] not in ['HTTPS', 'SSH', 'DNS']: 
-        base_score += 0.15
-    if traffic['size'] > 8000: 
-        base_score += 0.12
-    
-    # Apply protocol-specific threat modifier
-    base_score += traffic['threatModifier']
-    
-    # Add realistic randomness (smaller variance)
-    base_score += (random.random() * 0.15) - 0.075
-    
-    # Ensure score is within bounds
-    final_score = min(1.0, max(0.0, base_score))
+    """Use the real RandomForest model for threat classification."""
+    import numpy as np
 
-    # Realistic distribution: Most traffic is clean, some suspicious, few blocked
-    if final_score >= 0.75: 
-        return { 'finalScore': final_score, 'classification': 'BLOCKED_HIGH_THREAT' }
-    if final_score >= 0.45: 
-        return { 'finalScore': final_score, 'classification': 'QUARANTINE_SUSPICIOUS' }
-    return { 'finalScore': final_score, 'classification': 'CLEAN_LOW_THREAT' }
+    # Map simulation profile to the 11-feature vector expected by the RF model
+    proto_map = {'TCP': 6, 'UDP': 17, 'ICMP': 1, 'HTTPS': 6, 'HTTP': 6,
+                 'SSH': 6, 'DNS': 17, 'FTP': 6, 'RDP': 6, 'SMB': 6}
+    proto_num = proto_map.get(traffic['protocol'], 0)
+    dport = traffic['port']
+    sport = random.randint(1024, 65535)
+    pkt_size = traffic['size']
+
+    from detection_agent import SUSPICIOUS_PORTS, WELL_KNOWN_PORTS
+    port_is_suspicious = int(dport in SUSPICIOUS_PORTS or sport in SUSPICIOUS_PORTS)
+    port_is_well_known = int(dport in WELL_KNOWN_PORTS or sport in WELL_KNOWN_PORTS)
+
+    numeric = np.array([
+        proto_num,   # protocol number
+        sport,       # source port
+        dport,       # dest port
+        pkt_size,    # packet size
+        1,           # is_src_private (simulation assumes internal source)
+        0,           # is_dst_private
+        0,           # has_syn
+        0,           # has_fin
+        0,           # has_rst
+        port_is_suspicious,
+        port_is_well_known,
+    ], dtype=np.float64).reshape(1, -1)
+
+    pred, confidence = _traffic_classifier.predict(numeric)
+    final_score = confidence if pred == 1 else 1.0 - confidence
+
+    # Apply the profile's threat modifier as a small bias so traffic variety
+    # still influences the score even with a deterministic model.
+    final_score = min(1.0, max(0.0, final_score + traffic.get('threatModifier', 0) * 0.15))
+
+    if final_score >= 0.75:
+        return {'finalScore': final_score, 'classification': 'BLOCKED_HIGH_THREAT'}
+    if final_score >= 0.45:
+        return {'finalScore': final_score, 'classification': 'QUARANTINE_SUSPICIOUS'}
+    return {'finalScore': final_score, 'classification': 'CLEAN_LOW_THREAT'}
 
 def enforce_zero_trust(ai_result, user_context, traffic_profile):
     """Zero Trust Policy Engine (Context-Aware Enforcement)."""

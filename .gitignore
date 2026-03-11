@@ -11,6 +11,10 @@ __pycache__/
 *.pyd
 *.db
 
+# Detection Agent runtime artifacts (generated at runtime, not source code)
+q_table.json
+rf_model.pkl
+
 # Node
 node_modules/
 dist/
