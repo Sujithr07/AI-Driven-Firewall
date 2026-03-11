@@ -9,6 +9,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 import time
 import random
+import requests as http_requests
 
 from detection_agent import DetectionAgent, TrafficClassifier
 
@@ -27,6 +28,9 @@ CORS(app, supports_credentials=True)
 
 # Initialize JWT
 jwt = JWTManager(app)
+
+# Federated Learning config
+FL_SERVER_URL = os.getenv("FL_SERVER_URL", "http://localhost:6000")
 
 # Shared RF classifier instance used by the simulation endpoint
 _traffic_classifier = TrafficClassifier()
@@ -347,7 +351,11 @@ def _save_detection_to_db(detection):
         print(f"[DetectionAgent DB] Error saving detection: {e}")
 
 
-detection_agent = DetectionAgent(db_callback=_save_detection_to_db)
+detection_agent = DetectionAgent(
+    db_callback=_save_detection_to_db,
+    fl_server_url=FL_SERVER_URL,
+    client_id=os.getenv("FL_CLIENT_ID", None),
+)
 
 # In-memory cache for real-time data (for faster access)
 LOG_DATABASE = [] 
@@ -1003,6 +1011,33 @@ def agent_qtable():
     summary = detection_agent.rl_agent.get_q_table_summary()
     stats = detection_agent.rl_agent.get_stats()
     return jsonify({'q_table': summary, 'stats': stats})
+
+
+@app.route('/api/fl/status', methods=['GET'])
+@jwt_required()
+def fl_local_status():
+    """Get local FL client status and FL server status."""
+    local_status = detection_agent.fl_client.get_status() if detection_agent.fl_client else None
+    server_status = None
+    try:
+        resp = http_requests.get(f"{FL_SERVER_URL}/fl/status", timeout=3)
+        resp.raise_for_status()
+        server_status = resp.json()
+    except Exception:
+        server_status = None
+    return jsonify({"local": local_status, "server": server_status})
+
+
+@app.route('/api/fl/rounds', methods=['GET'])
+@jwt_required()
+def fl_rounds_proxy():
+    """Proxy FL server rounds history."""
+    try:
+        resp = http_requests.get(f"{FL_SERVER_URL}/fl/rounds", timeout=3)
+        resp.raise_for_status()
+        return jsonify(resp.json())
+    except Exception:
+        return jsonify({"rounds": [], "error": "FL server unreachable"})
 
 
 @app.route('/api/agent/detections/history', methods=['GET'])

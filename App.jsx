@@ -4,6 +4,7 @@ import NetworkTrafficView from './NetworkTrafficView';
 import ImmutableLogsView from './ImmutableLogsView';
 import SettingsView from './SettingsView';
 import DetectionAgentView, { BrainIcon } from './DetectionAgentView';
+import FederationView from './FederationView';
 
 // --- Icon Components (using lucide-react equivalent SVGs) ---
 const ServerIcon = (props) => (
@@ -23,6 +24,9 @@ const SettingsIcon = (props) => (
 );
 const FileTextIcon = (props) => (
     <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
+);
+const GlobeIcon = (props) => (
+    <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
 );
 
 // --- Data Structures and Logic (Kept here for completeness, though Flask controls the core logic) ---
@@ -52,6 +56,7 @@ const Sidebar = ({ currentPage, setCurrentPage }) => {
         { id: 'dashboard', label: 'Dashboard', icon: ZapIcon, active: currentPage === 'dashboard' },
         { id: 'network_traffic', label: 'Network Traffic', icon: ServerIcon, active: currentPage === 'network_traffic' },
         { id: 'detection_agent', label: 'Detection Agent', icon: BrainIcon, active: currentPage === 'detection_agent' },
+        { id: 'federation', label: 'Federation', icon: GlobeIcon, active: currentPage === 'federation' },
         { id: 'threat_detection', label: 'Threat Detection', icon: ShieldCheckIcon, active: currentPage === 'threat_detection' },
         { id: 'firewall_rules', label: 'Firewall Rules', icon: LockIcon, active: currentPage === 'firewall_rules' },
         { id: 'immutable_logs', label: 'Immutable Logs', icon: FileTextIcon, active: currentPage === 'immutable_logs' },
@@ -563,6 +568,8 @@ const App = () => {
                 return <DashboardView alerts={alerts} metrics={metrics} user={user} />;
             case 'detection_agent':
                 return <DetectionAgentView token={token} />;
+            case 'federation':
+                return <FederationView token={token} />;
             case 'threat_detection':
                 return <ThreatDetectionView currentLog={currentLog} />;
             case 'firewall_rules':

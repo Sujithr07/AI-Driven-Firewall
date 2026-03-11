@@ -20,8 +20,11 @@ import json
 import os
 import pickle
 import collections
+import uuid
 import numpy as np
 from datetime import datetime
+
+from fl_client import FLClient
 
 try:
     from scapy.all import sniff, IP, TCP, UDP, ICMP, conf
@@ -752,7 +755,7 @@ class DetectionAgent:
       5. Computes reward and updates Q-table
     """
 
-    def __init__(self, db_callback=None):
+    def __init__(self, db_callback=None, fl_server_url=None, client_id=None):
         self.classifier = EnsemblePredictor()
         self.rl_agent = DQNAgent()
         self.lstm = LSTMDetector() if LSTM_AVAILABLE else None
@@ -774,6 +777,14 @@ class DetectionAgent:
             "packets_blocked": 0,
             "start_time": None,
         }
+
+        # Federated Learning
+        if fl_server_url:
+            cid = client_id or f"client-{uuid.uuid4().hex[:8]}"
+            self.fl_client = FLClient(client_id=cid, server_url=fl_server_url)
+            self.fl_client.start(self.classifier)
+        else:
+            self.fl_client = None
 
     # ---- public API ----
 
@@ -806,6 +817,8 @@ class DetectionAgent:
         self.rl_agent.save()
         if self.lstm is not None:
             self.lstm.save()
+        if self.fl_client:
+            self.fl_client.stop()
         return {"status": "stopped"}
 
     def is_running(self):
@@ -835,6 +848,7 @@ class DetectionAgent:
             "xgboost_available": XGBOOST_AVAILABLE,
             "torch_available": TORCH_AVAILABLE,
             "lstm_available": LSTM_AVAILABLE,
+            "fl_status": self.fl_client.get_status() if self.fl_client else None,
         }
 
     # ---- internal ----
