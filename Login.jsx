@@ -20,7 +20,7 @@ const Login = ({ onLogin }) => {
         try {
             if (isRegister) {
                 // Register
-                const response = await fetch('http://localhost:5000/api/auth/register', {
+                const response = await fetch('/api/auth/register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, email, password }),
@@ -32,7 +32,7 @@ const Login = ({ onLogin }) => {
                 }
 
                 // Auto login after registration
-                const loginResponse = await fetch('http://localhost:5000/api/auth/login', {
+                const loginResponse = await fetch('/api/auth/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, password }),
@@ -48,7 +48,7 @@ const Login = ({ onLogin }) => {
                 onLogin(loginData.user);
             } else {
                 // Login
-                const response = await fetch('http://localhost:5000/api/auth/login', {
+                const response = await fetch('/api/auth/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, password }),

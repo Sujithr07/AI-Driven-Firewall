@@ -7,4 +7,8 @@ python-dotenv==1.0.0
 scapy==2.6.1
 scikit-learn==1.6.1
 numpy==2.2.3
+xgboost>=2.0.0
+torch>=2.0.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
 

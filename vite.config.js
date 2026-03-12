@@ -3,9 +3,17 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite'; // <-- NEW IMPORT
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()], // <-- ADDED tailwindcss() TO PLUGINS ARRAY
+  plugins: [react(), tailwindcss()],
   server: {
-    // The port for the web browser (Frontend)
-    port: 5173, 
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:5000',
+        changeOrigin: true,
+      },
+    },
+    watch: {
+      ignored: ['**/*.py', '**/*.pyw', '**/*.pkl', '**/*.pt', '**/q_table.json', '**/__pycache__/**', '**/.venv/**'],
+    },
   },
 });

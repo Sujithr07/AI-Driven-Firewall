@@ -4,6 +4,8 @@ import NetworkTrafficView from './NetworkTrafficView';
 import ImmutableLogsView from './ImmutableLogsView';
 import SettingsView from './SettingsView';
 import DetectionAgentView, { BrainIcon } from './DetectionAgentView';
+import XAIDashboardView from './XAIDashboardView';
+import FederationView from './FederationView';
 
 // --- Icon Components (using lucide-react equivalent SVGs) ---
 const ServerIcon = (props) => (
@@ -24,6 +26,9 @@ const SettingsIcon = (props) => (
 const FileTextIcon = (props) => (
     <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
 );
+const GlobeIcon = (props) => (
+    <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+);
 
 // --- Data Structures and Logic (Kept here for completeness, though Flask controls the core logic) ---
 
@@ -36,22 +41,14 @@ const SEVERITY_CLASSES = {
     Quarantined: 'bg-yellow-900/50 text-yellow-400 border-yellow-500',
 };
 
-const AI_FIREWALL_RULES = [
-    { id: 1, name: "Default Deny All", source: "Any", destination: "Any", action: "DENY", zeroTrust: "High", lastHit: "N/A" },
-    { id: 2, name: "Admin SSH Access", source: "Trusted IPs", destination: "Management Network", action: "ALLOW", zeroTrust: "Critical", lastHit: "5m ago" },
-    { id: 3, name: "Cloud Sync (HTTPS)", source: "Internal", destination: "External/Cloud", action: "ALLOW", zeroTrust: "Medium", lastHit: "1s ago" },
-    { id: 4, name: "Unpatched Device Quarantine", source: "Any", destination: "Any", action: "QUARANTINE", zeroTrust: "Low", lastHit: "12m ago" },
-];
-
-// NOTE: The core logic (classifyTraffic and enforceZeroTrust) is now handled by app.app.py,
-// but we keep the placeholders here just in case, although they are not used for live data.
-
 // --- Sidebar Navigation Component ---
 const Sidebar = ({ currentPage, setCurrentPage }) => {
     const navItems = [
         { id: 'dashboard', label: 'Dashboard', icon: ZapIcon, active: currentPage === 'dashboard' },
         { id: 'network_traffic', label: 'Network Traffic', icon: ServerIcon, active: currentPage === 'network_traffic' },
         { id: 'detection_agent', label: 'Detection Agent', icon: BrainIcon, active: currentPage === 'detection_agent' },
+        { id: 'xai_dashboard', label: 'XAI Explain', icon: ShieldCheckIcon, active: currentPage === 'xai_dashboard' },
+        { id: 'federation', label: 'Federation', icon: GlobeIcon, active: currentPage === 'federation' },
         { id: 'threat_detection', label: 'Threat Detection', icon: ShieldCheckIcon, active: currentPage === 'threat_detection' },
         { id: 'firewall_rules', label: 'Firewall Rules', icon: LockIcon, active: currentPage === 'firewall_rules' },
         { id: 'immutable_logs', label: 'Immutable Logs', icon: FileTextIcon, active: currentPage === 'immutable_logs' },
@@ -285,49 +282,72 @@ const ThreatDetectionView = ({ currentLog }) => (
     </div>
 );
 
-const FirewallRulesView = () => (
-    <div className="p-8">
-        <h2 className="text-3xl font-bold text-white mb-6">Firewall Rules & Zero Trust Policy Engine</h2>
-        <div className="bg-[#161b22] p-6 rounded-xl border border-gray-800 shadow-lg">
-            <h3 className="text-xl font-semibold text-gray-200 mb-4">AI-Managed Dynamic Rules</h3>
-            <table className="min-w-full divide-y divide-gray-700">
-                <thead>
-                    <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
-                        <th className="px-4 py-2">ID</th>
-                        <th className="px-4 py-2">Rule Name</th>
-                        <th className="px-4 py-2">Source / Destination</th>
-                        <th className="px-4 py-2">Required ZT Level</th>
-                        <th className="px-4 py-2">Action</th>
-                        <th className="px-4 py-2">Last Hit</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800">
-                    {AI_FIREWALL_RULES.map((rule) => (
-                        <tr key={rule.id} className="text-sm text-gray-300 hover:bg-[#1f2937]/50">
-                            <td className="px-4 py-3">{rule.id}</td>
-                            <td className="px-4 py-3 font-medium">{rule.name}</td>
-                            <td className="px-4 py-3">{rule.source} → {rule.destination}</td>
-                            <td className="px-4 py-3 text-[#00ff7f]">{rule.zeroTrust}</td>
-                            <td className="px-4 py-3">
-                                <span className={`px-3 py-1 text-xs rounded-full font-bold ${
-                                    rule.action === 'DENY' ? 'bg-red-600/30 text-red-400' :
-                                    rule.action === 'ALLOW' ? 'bg-green-600/30 text-green-400' :
-                                    'bg-yellow-600/30 text-yellow-400'
-                                }`}>
-                                    {rule.action}
-                                </span>
-                            </td>
-                            <td className="px-4 py-3 text-gray-500">{rule.lastHit}</td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-            <p className="mt-4 text-xs text-gray-500 italic">
-                Note: Rule priority is dynamic; AI-Engine can temporarily override policies for high-confidence threats (simulated in Threat Detection tab).
-            </p>
+const FirewallRulesView = ({ token }) => {
+    const [rules, setRules] = useState([]);
+
+    useEffect(() => {
+        const fetchRules = async () => {
+            try {
+                const res = await fetch('/api/response/status', {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setRules(data.blocked_ips || []);
+                }
+            } catch (e) { /* ignore */ }
+        };
+        fetchRules();
+        const iv = setInterval(fetchRules, 5000);
+        return () => clearInterval(iv);
+    }, [token]);
+
+    return (
+        <div className="p-8">
+            <h2 className="text-3xl font-bold text-white mb-6">Active Firewall Rules (AI-Managed)</h2>
+            <div className="bg-[#161b22] p-6 rounded-xl border border-gray-800 shadow-lg">
+                <h3 className="text-xl font-semibold text-gray-200 mb-4">Currently Enforced Rules</h3>
+                {rules.length === 0 ? (
+                    <p className="text-gray-500 text-sm">No active blocks. Start the Detection Agent to generate rules.</p>
+                ) : (
+                    <table className="min-w-full divide-y divide-gray-700">
+                        <thead>
+                            <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
+                                <th className="px-4 py-2">IP Address</th>
+                                <th className="px-4 py-2">Rule Type</th>
+                                <th className="px-4 py-2">Confidence</th>
+                                <th className="px-4 py-2">Reason</th>
+                                <th className="px-4 py-2">Age</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-800">
+                            {rules.map((rule, i) => (
+                                <tr key={rule.action_id || i} className="text-sm text-gray-300 hover:bg-[#1f2937]/50">
+                                    <td className="px-4 py-3 font-mono">{rule.ip}</td>
+                                    <td className="px-4 py-3">
+                                        <span className={`px-3 py-1 text-xs rounded-full font-bold ${
+                                            rule.rule_type === 'hard_block' ? 'bg-red-600/30 text-red-400' :
+                                            rule.rule_type === 'rate_limit' ? 'bg-yellow-600/30 text-yellow-400' :
+                                            'bg-blue-600/30 text-blue-400'
+                                        }`}>
+                                            {rule.rule_type?.replace('_', ' ').toUpperCase()}
+                                        </span>
+                                    </td>
+                                    <td className="px-4 py-3">{(rule.confidence * 100).toFixed(0)}%</td>
+                                    <td className="px-4 py-3">{rule.reason}</td>
+                                    <td className="px-4 py-3 text-gray-500">{rule.age_seconds}s</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+                <p className="mt-4 text-xs text-gray-500 italic">
+                    Rules are dynamically managed by the AI Response Agent based on live detections.
+                </p>
+            </div>
         </div>
-    </div>
-);
+    );
+};
 
 const EmptyView = ({ title }) => (
     <div className="p-8 flex flex-col items-center justify-center min-h-[80vh] text-center">
@@ -403,16 +423,20 @@ const App = () => {
     const fetchInitialData = useCallback(async () => {
         if (!token) return;
         try {
-            const response = await fetch('http://localhost:5000/api/dashboard', {
+            const response = await fetch('/api/dashboard', {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }
             });
             if (!response.ok) {
-                if (response.status === 401) {
+                if (response.status === 401 || response.status === 422) {
+                    // 401 = expired token, 422 = malformed/invalid token
                     localStorage.removeItem('token');
                     localStorage.removeItem('user');
+                    setToken(null);
+                    setUser(null);
                     setIsAuthenticated(false);
+                    setIsLoading(false);
                     return;
                 }
                 throw new Error(`HTTP error! status: ${response.status}`);
@@ -461,7 +485,7 @@ const App = () => {
     const simulateTrafficAttempt = useCallback(async () => {
         if (!token) return;
         try {
-            const response = await fetch('http://localhost:5000/api/traffic/simulate', {
+            const response = await fetch('/api/traffic/simulate', {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',
@@ -503,19 +527,25 @@ const App = () => {
     useEffect(() => {
         if (isLoading || backendError) return; // Wait until initial data is loaded and backend is available
 
+        let cancelled = false;
+        let currentTimeoutId = null;
+
         // Use a randomized interval between 15-25 seconds to simulate realistic network traffic patterns
         const getRandomInterval = () => Math.floor(Math.random() * 10000) + 15000; // 15-25 seconds
         
         const scheduleNext = () => {
-            const timeoutId = setTimeout(() => {
+            currentTimeoutId = setTimeout(() => {
+                if (cancelled) return;
                 simulateTrafficAttempt();
-                scheduleNext(); // Schedule the next one
+                scheduleNext();
             }, getRandomInterval());
-            return timeoutId;
         };
 
-        const timeoutId = scheduleNext();
-        return () => clearTimeout(timeoutId);
+        scheduleNext();
+        return () => {
+            cancelled = true;
+            if (currentTimeoutId) clearTimeout(currentTimeoutId);
+        };
     }, [simulateTrafficAttempt, isLoading, backendError]); // Added backendError dependency
 
     // --- View Renderer ---
@@ -562,11 +592,15 @@ const App = () => {
             case 'dashboard':
                 return <DashboardView alerts={alerts} metrics={metrics} user={user} />;
             case 'detection_agent':
-                return <DetectionAgentView token={token} />;
+                return <DetectionAgentView token={token} onNavigateToXAI={() => setCurrentPage('xai_dashboard')} />;
+            case 'xai_dashboard':
+                return <XAIDashboardView token={token} />;
+            case 'federation':
+                return <FederationView token={token} />;
             case 'threat_detection':
                 return <ThreatDetectionView currentLog={currentLog} />;
             case 'firewall_rules':
-                return <FirewallRulesView />;
+                return <FirewallRulesView token={token} />;
             case 'network_traffic':
                 return <NetworkTrafficView token={token} />;
             case 'immutable_logs':
