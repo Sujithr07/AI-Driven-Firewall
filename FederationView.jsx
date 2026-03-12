@@ -10,10 +10,10 @@ const FederationView = ({ token }) => {
         if (!token) return;
         try {
             const [statusRes, roundsRes] = await Promise.all([
-                fetch('http://localhost:5000/api/fl/status', {
+                fetch('/api/fl/status', {
                     headers: { Authorization: `Bearer ${token}` },
                 }),
-                fetch('http://localhost:5000/api/fl/rounds', {
+                fetch('/api/fl/rounds', {
                     headers: { Authorization: `Bearer ${token}` },
                 }),
             ]);

@@ -47,7 +47,7 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
 
     const fetchStatus = useCallback(async () => {
         try {
-            const res = await fetch('http://localhost:5000/api/agent/status', { headers });
+            const res = await fetch('/api/agent/status', { headers });
             if (res.ok) {
                 const data = await res.json();
                 setAgentStatus(data);
@@ -59,7 +59,7 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
 
     const fetchDetections = useCallback(async () => {
         try {
-            const res = await fetch('http://localhost:5000/api/agent/detections?limit=100', { headers });
+            const res = await fetch('/api/agent/detections?limit=100', { headers });
             if (res.ok) {
                 const data = await res.json();
                 setDetections(data.detections || []);
@@ -71,7 +71,7 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
 
     const fetchQTable = useCallback(async () => {
         try {
-            const res = await fetch('http://localhost:5000/api/agent/qtable', { headers });
+            const res = await fetch('/api/agent/qtable', { headers });
             if (res.ok) {
                 const data = await res.json();
                 setQTable(data.q_table || []);
@@ -84,7 +84,7 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
 
     const fetchResponseStatus = useCallback(async () => {
         try {
-            const res = await fetch('http://localhost:5000/api/response/status', { headers });
+            const res = await fetch('/api/response/status', { headers });
             if (res.ok) {
                 const data = await res.json();
                 setResponseStatus(data);
@@ -96,7 +96,7 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
 
     const fetchXAILatest = useCallback(async () => {
         try {
-            const res = await fetch('http://localhost:5000/api/xai/explain?limit=1', { headers });
+            const res = await fetch('/api/xai/explain?limit=1', { headers });
             if (res.ok) {
                 const data = await res.json();
                 if (data.detections && data.detections.length > 0) {
@@ -129,7 +129,7 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
     const startAgent = async (simulation = true) => {
         setStarting(true);
         try {
-            const res = await fetch('http://localhost:5000/api/agent/start', {
+            const res = await fetch('/api/agent/start', {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ simulation }),
@@ -146,7 +146,7 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
 
     const stopAgent = async () => {
         try {
-            await fetch('http://localhost:5000/api/agent/stop', { method: 'POST', headers });
+            await fetch('/api/agent/stop', { method: 'POST', headers });
             await fetchStatus();
         } catch (e) {
             console.error('Failed to stop agent:', e);
@@ -508,7 +508,7 @@ const ResponseAgentPanel = ({ token }) => {
 
     const fetchData = useCallback(async () => {
         try {
-            const res = await fetch('http://localhost:5000/api/response/status', { headers });
+            const res = await fetch('/api/response/status', { headers });
             if (res.ok) setData(await res.json());
         } catch (e) {
             console.error('Failed to fetch response status:', e);
@@ -524,7 +524,7 @@ const ResponseAgentPanel = ({ token }) => {
     const handleRollback = async (actionId) => {
         setLoadingRollback(actionId);
         try {
-            await fetch(`http://localhost:5000/api/response/rollback/${actionId}`, {
+            await fetch(`/api/response/rollback/${actionId}`, {
                 method: 'POST', headers
             });
             await fetchData();
@@ -675,7 +675,7 @@ const VisualizationsPanel = ({ token }) => {
 
     const fetchCharts = useCallback(async () => {
         try {
-            const res = await fetch('http://localhost:5000/api/agent/visualizations', { headers });
+            const res = await fetch('/api/agent/visualizations', { headers });
             if (res.ok) {
                 const data = await res.json();
                 setCharts(data.charts || []);

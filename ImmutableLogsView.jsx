@@ -12,7 +12,7 @@ const ChainIntegrityBanner = ({ token }) => {
     const verify = async () => {
         setVerifying(true);
         try {
-            const res = await fetch('http://localhost:5000/api/logs/verify', {
+            const res = await fetch('/api/logs/verify', {
                 headers: { Authorization: `Bearer ${token}` },
             });
             const data = await res.json();
@@ -56,7 +56,7 @@ const ChainIntegrityBanner = ({ token }) => {
                         {verifying ? 'Verifying...' : '🔄 Re-verify'}
                     </button>
                     <a
-                        href="http://localhost:5000/api/logs/export"
+                        href="/api/logs/export"
                         className="px-3 py-1.5 text-xs bg-[#00ff7f]/10 hover:bg-[#00ff7f]/20 border border-[#00ff7f]/40 rounded text-[#00ff7f] transition"
                     >
                         📥 Export Audit Log
@@ -86,7 +86,7 @@ const ImmutableLogsView = ({ token }) => {
                     ...(filters.decision && { decision: filters.decision }),
                 });
 
-                const response = await fetch(`http://localhost:5000/api/logs?${params}`, {
+                const response = await fetch(`/api/logs?${params}`, {
                     headers: {
                         'Authorization': `Bearer ${token}`
                     }

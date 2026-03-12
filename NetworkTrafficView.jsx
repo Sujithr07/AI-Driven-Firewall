@@ -16,7 +16,7 @@ const NetworkTrafficView = ({ token }) => {
 
     const fetchTrafficData = async () => {
         try {
-            const response = await fetch('http://localhost:5000/api/network/traffic', {
+            const response = await fetch('/api/network/traffic', {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }

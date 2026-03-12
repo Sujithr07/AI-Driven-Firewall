@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -15,8 +16,31 @@ load_dotenv()
 
 # --- Backend Data and Configuration ---
 
+def _get_jwt_secret():
+    """Load JWT secret from env or generate and persist one."""
+    secret = os.getenv('JWT_SECRET_KEY')
+    if secret:
+        return secret
+    secret = secrets.token_hex(32)
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    with open(env_path, 'r') as f:
+        content = f.read()
+    if 'JWT_SECRET_KEY=' in content:
+        lines = content.splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith('JWT_SECRET_KEY='):
+                lines[i] = f'JWT_SECRET_KEY={secret}'
+                break
+        with open(env_path, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+    else:
+        with open(env_path, 'a') as f:
+            f.write(f'\nJWT_SECRET_KEY={secret}\n')
+    os.environ['JWT_SECRET_KEY'] = secret
+    return secret
+
 app = Flask(__name__)
-app.config['JWT_SECRET_KEY'] = 'your-secret-key-change-in-production'  # Change this in production!
+app.config['JWT_SECRET_KEY'] = _get_jwt_secret()
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 app.config['JWT_ALGORITHM'] = 'HS256'
 
@@ -36,26 +60,44 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def init_db():
-    """Initialize database - check if admin user exists, create if not"""
+    """Initialize database — seed an admin user if none exists."""
+    admin_user = os.getenv('ADMIN_USERNAME', 'admin')
+    admin_pass = os.getenv('ADMIN_PASSWORD', '')
+    admin_email = os.getenv('ADMIN_EMAIL', 'admin@firewall.local')
+
+    if not admin_pass:
+        admin_pass = secrets.token_urlsafe(16)
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+        with open(env_path, 'r') as f:
+            content = f.read()
+        if 'ADMIN_PASSWORD=' in content:
+            lines = content.splitlines()
+            for i, line in enumerate(lines):
+                if line.startswith('ADMIN_PASSWORD='):
+                    lines[i] = f'ADMIN_PASSWORD={admin_pass}'
+                    break
+            with open(env_path, 'w') as f:
+                f.write('\n'.join(lines) + '\n')
+        else:
+            with open(env_path, 'a') as f:
+                f.write(f'\nADMIN_PASSWORD={admin_pass}\n')
+        print(f'[Init] Generated admin password and saved to .env')
+
     try:
-        # Check if default admin user exists
-        result = supabase.table('users').select('*').eq('username', 'ganesh').execute()
-        
+        result = supabase.table('users').select('*').eq('username', admin_user).execute()
         if not result.data:
-            # Create default admin user
-            admin_password = generate_password_hash('ganesh123')
             supabase.table('users').insert({
-                'username': 'ganesh',
-                'email': 'ganesh@firewall.local',
-                'password_hash': admin_password,
+                'username': admin_user,
+                'email': admin_email,
+                'password_hash': generate_password_hash(admin_pass),
                 'role': 'admin'
             }).execute()
-            print("Default admin user created!")
+            print(f'Default admin user "{admin_user}" created.')
         else:
-            print("Admin user already exists!")
+            print('Admin user already exists.')
     except Exception as e:
-        print(f"Error initializing database: {e}")
-        print("Make sure you have created the tables in Supabase. See supabase_migration.sql for SQL schema.")
+        print(f'Error initializing database: {e}')
+        print('Make sure you have created the tables in Supabase. See supabase_migration.sql for SQL schema.')
 
 # Initialize database on startup
 init_db()
@@ -659,6 +701,6 @@ def calculate_metrics():
 if __name__ == '__main__':
     print("=======================================================================")
     print("FLASK BACKEND RUNNING: Access the API at http://127.0.0.1:5000")
-    print("Default admin credentials: username='ganesh', password='ganesh123'")
+    print("Admin credentials configured via .env (ADMIN_USERNAME / ADMIN_PASSWORD)")
     print("=======================================================================")
     app.run(debug=True, port=5000)

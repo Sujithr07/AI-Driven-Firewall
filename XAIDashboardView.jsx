@@ -467,7 +467,7 @@ const XAIDashboardView = ({ token }) => {
 
     const fetchDetections = useCallback(async () => {
         try {
-            const res = await fetch('http://localhost:5000/api/xai/explain?limit=20', { headers });
+            const res = await fetch('/api/xai/explain?limit=20', { headers });
             if (res.ok) {
                 const data = await res.json();
                 const dets = data.detections || [];
@@ -486,7 +486,7 @@ const XAIDashboardView = ({ token }) => {
 
     const fetchFeatureStats = useCallback(async () => {
         try {
-            const res = await fetch('http://localhost:5000/api/xai/feature-stats', { headers });
+            const res = await fetch('/api/xai/feature-stats', { headers });
             if (res.ok) {
                 const data = await res.json();
                 setFeatureStats(data);
