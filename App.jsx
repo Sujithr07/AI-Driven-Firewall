@@ -284,67 +284,386 @@ const ThreatDetectionView = ({ currentLog }) => (
 
 const FirewallRulesView = ({ token }) => {
     const [rules, setRules] = useState([]);
+    const [stats, setStats] = useState({});
+    const [totalBlocked, setTotalBlocked] = useState(0);
+    const [lastUpdated, setLastUpdated] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [search, setSearch] = useState('');
+    const [filterType, setFilterType] = useState('all');
+    const [sortBy, setSortBy] = useState('newest');
+    const [expandedRow, setExpandedRow] = useState(null);
+    const [confirmRollback, setConfirmRollback] = useState(null);
+
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    const fetchRules = useCallback(async () => {
+        try {
+            const res = await fetch('/api/response/status', { headers });
+            if (res.ok) {
+                const data = await res.json();
+                setRules(data.blocked_ips || []);
+                setStats(data.stats || {});
+                setTotalBlocked(data.total_blocked || 0);
+                setLastUpdated(new Date());
+            }
+        } catch (e) { /* ignore */ }
+        setLoading(false);
+    }, [token]);
 
     useEffect(() => {
-        const fetchRules = async () => {
-            try {
-                const res = await fetch('/api/response/status', {
-                    headers: { Authorization: `Bearer ${token}` },
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    setRules(data.blocked_ips || []);
-                }
-            } catch (e) { /* ignore */ }
-        };
         fetchRules();
         const iv = setInterval(fetchRules, 5000);
         return () => clearInterval(iv);
-    }, [token]);
+    }, [fetchRules]);
+
+    const formatAge = (seconds) => {
+        if (!seconds) return '0s';
+        const m = Math.floor(seconds / 60);
+        const s = Math.floor(seconds % 60);
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    };
+
+    const formatExpiry = (rule) => {
+        if (!rule.expires_at) return { text: 'Permanent', cls: 'text-gray-500' };
+        const remaining = Math.max(0, Math.floor(rule.expires_at - Date.now() / 1000));
+        if (remaining <= 0) return { text: 'Expired', cls: 'text-gray-500' };
+        const m = Math.floor(remaining / 60);
+        const s = remaining % 60;
+        const label = `expires in ${m}m ${s}s`;
+        return { text: label, cls: remaining < 60 ? 'text-red-400' : 'text-purple-400' };
+    };
+
+    const decodeProtocol = (reason) => {
+        if (!reason) return 'ANY';
+        const r = reason.toLowerCase();
+        if (r.includes('syn')) return 'TCP';
+        if (r.includes('udp')) return 'UDP';
+        return 'ANY';
+    };
+
+    const decodePort = (reason) => {
+        if (!reason) return '—';
+        const r = reason.toLowerCase();
+        if (r === 'syn_scan') return 'Port Scan';
+        if (r === 'ddos') return 'All Ports';
+        return '—';
+    };
+
+    const REASON_MAP = {
+        syn_scan: 'SYN Port Scan',
+        ddos: 'DDoS Pattern',
+        brute_force: 'Brute Force',
+        port_scan: 'Port Scan',
+        anomaly: 'Traffic Anomaly',
+    };
+
+    const decodeReason = (reason) => {
+        if (!reason) return 'Unknown';
+        if (REASON_MAP[reason]) return REASON_MAP[reason];
+        return reason.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    };
+
+    const riskLevel = (confidence) => {
+        if (confidence > 0.85) return { label: 'Critical', color: 'text-red-400', bg: 'bg-red-600/30', bar: 'bg-red-500' };
+        if (confidence > 0.65) return { label: 'High', color: 'text-orange-400', bg: 'bg-orange-600/30', bar: 'bg-orange-500' };
+        if (confidence > 0.45) return { label: 'Medium', color: 'text-yellow-400', bg: 'bg-yellow-600/30', bar: 'bg-yellow-500' };
+        return { label: 'Low', color: 'text-green-400', bg: 'bg-green-600/30', bar: 'bg-green-500' };
+    };
+
+    const ruleTypeStyles = {
+        hard_block: { bg: 'bg-red-600/30', text: 'text-red-400', border: 'border-red-500/30', borderSolid: 'border-red-500' },
+        temp_block: { bg: 'bg-purple-600/30', text: 'text-purple-400', border: 'border-purple-500/30', borderSolid: 'border-purple-500' },
+        rate_limit: { bg: 'bg-yellow-600/30', text: 'text-yellow-400', border: 'border-yellow-500/30', borderSolid: 'border-yellow-500' },
+        quarantine: { bg: 'bg-orange-600/30', text: 'text-orange-400', border: 'border-orange-500/30', borderSolid: 'border-orange-500' },
+    };
+
+    const RULE_TOOLTIPS = {
+        hard_block: 'Permanently drops all packets from this IP via iptables DROP',
+        temp_block: 'Drops packets for a fixed duration, then auto-expires',
+        rate_limit: 'Allows max 10 packets/min, drops excess — used for moderate threats',
+        quarantine: 'Tags packets with mark 99 for routing to an isolated segment — used for investigation',
+    };
+
+    const getIptablesCmd = (rule) => {
+        const ip = rule.ip;
+        if (rule.rule_type === 'hard_block' || rule.rule_type === 'temp_block')
+            return `iptables -A INPUT -s ${ip} -j DROP`;
+        if (rule.rule_type === 'rate_limit')
+            return `iptables -A INPUT -s ${ip} -m limit --limit 10/min -j ACCEPT`;
+        if (rule.rule_type === 'quarantine')
+            return `iptables -A INPUT -s ${ip} -j MARK --set-mark 99`;
+        return `iptables -A INPUT -s ${ip} -j DROP`;
+    };
+
+    const getRuleExplanation = (rule) => {
+        if (rule.rule_type === 'hard_block') return `All inbound traffic from ${rule.ip} is permanently dropped. No packets will reach any service.`;
+        if (rule.rule_type === 'temp_block') return `All inbound traffic from ${rule.ip} is dropped temporarily until the block expires.`;
+        if (rule.rule_type === 'rate_limit') return `Inbound traffic from ${rule.ip} is rate-limited to 10 packets per minute. Excess packets are dropped.`;
+        if (rule.rule_type === 'quarantine') return `All inbound traffic from ${rule.ip} is marked with ID 99 and routed to an isolated network segment for investigation.`;
+        return `Traffic from ${rule.ip} is being controlled by the AI response agent.`;
+    };
+
+    const handleRollback = async (actionId) => {
+        try {
+            await fetch(`/api/response/rollback/${encodeURIComponent(actionId)}`, { method: 'POST', headers });
+            await fetchRules();
+        } catch (e) {
+            console.error('Rollback failed:', e);
+        }
+        setConfirmRollback(null);
+    };
+
+    const handleExport = () => {
+        const blob = new Blob([JSON.stringify(rules, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `firewall-rules-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const filtered = useMemo(() => {
+        let arr = [...rules];
+        if (search) arr = arr.filter(r => r.ip && r.ip.toLowerCase().includes(search.toLowerCase()));
+        if (filterType !== 'all') arr = arr.filter(r => r.rule_type === filterType);
+        if (sortBy === 'newest') arr.sort((a, b) => (b.age_seconds || 0) - (a.age_seconds || 0));
+        else if (sortBy === 'confidence') arr.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+        else if (sortBy === 'longest') arr.sort((a, b) => (b.age_seconds || 0) - (a.age_seconds || 0));
+        return arr;
+    }, [rules, search, filterType, sortBy]);
+
+    if (loading) {
+        return (
+            <div className="p-8 flex items-center justify-center min-h-[80vh]">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#00ff7f]"></div>
+            </div>
+        );
+    }
 
     return (
         <div className="p-8">
-            <h2 className="text-3xl font-bold text-white mb-6">Active Firewall Rules (AI-Managed)</h2>
-            <div className="bg-[#161b22] p-6 rounded-xl border border-gray-800 shadow-lg">
-                <h3 className="text-xl font-semibold text-gray-200 mb-4">Currently Enforced Rules</h3>
-                {rules.length === 0 ? (
-                    <p className="text-gray-500 text-sm">No active blocks. Start the Detection Agent to generate rules.</p>
-                ) : (
-                    <table className="min-w-full divide-y divide-gray-700">
-                        <thead>
-                            <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
-                                <th className="px-4 py-2">IP Address</th>
-                                <th className="px-4 py-2">Rule Type</th>
-                                <th className="px-4 py-2">Confidence</th>
-                                <th className="px-4 py-2">Reason</th>
-                                <th className="px-4 py-2">Age</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-800">
-                            {rules.map((rule, i) => (
-                                <tr key={rule.action_id || i} className="text-sm text-gray-300 hover:bg-[#1f2937]/50">
-                                    <td className="px-4 py-3 font-mono">{rule.ip}</td>
-                                    <td className="px-4 py-3">
-                                        <span className={`px-3 py-1 text-xs rounded-full font-bold ${
-                                            rule.rule_type === 'hard_block' ? 'bg-red-600/30 text-red-400' :
-                                            rule.rule_type === 'rate_limit' ? 'bg-yellow-600/30 text-yellow-400' :
-                                            'bg-blue-600/30 text-blue-400'
-                                        }`}>
-                                            {rule.rule_type?.replace('_', ' ').toUpperCase()}
-                                        </span>
-                                    </td>
-                                    <td className="px-4 py-3">{(rule.confidence * 100).toFixed(0)}%</td>
-                                    <td className="px-4 py-3">{rule.reason}</td>
-                                    <td className="px-4 py-3 text-gray-500">{rule.age_seconds}s</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                )}
-                <p className="mt-4 text-xs text-gray-500 italic">
-                    Rules are dynamically managed by the AI Response Agent based on live detections.
-                </p>
+            {/* Title + Export */}
+            <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                    <LockIcon className="w-8 h-8 text-[#00ff7f]" />
+                    <div>
+                        <h2 className="text-3xl font-bold text-white">Active Firewall Rules</h2>
+                        <p className="text-gray-400 text-sm">AI-Managed Enforcement via iptables</p>
+                    </div>
+                </div>
+                <button
+                    onClick={handleExport}
+                    className="px-4 py-2 text-sm bg-[#161b22] border border-gray-700 text-gray-300 rounded-lg hover:text-white hover:border-gray-500 transition"
+                >
+                    📥 Export JSON
+                </button>
             </div>
+
+            {/* Stat Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                    <div className="flex items-center justify-between">
+                        <p className="text-xs text-gray-500 uppercase tracking-wider">Active Rules</p>
+                        <span className="relative flex h-2.5 w-2.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                        </span>
+                    </div>
+                    <p className="text-2xl font-bold font-mono text-white mt-1">{totalBlocked}</p>
+                    {lastUpdated && <p className="text-xs text-gray-600 mt-1">Updated {lastUpdated.toLocaleTimeString()}</p>}
+                </div>
+                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider">Hard Blocks</p>
+                    <p className="text-2xl font-bold font-mono text-red-400 mt-1">{stats.hard_blocks || 0}</p>
+                </div>
+                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider">Temp Blocks</p>
+                    <p className="text-2xl font-bold font-mono text-purple-400 mt-1">{stats.temp_blocks || 0}</p>
+                </div>
+                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider">Self-Healed</p>
+                    <p className="text-2xl font-bold font-mono text-green-400 mt-1">{stats.self_healed || 0}</p>
+                </div>
+            </div>
+
+            {/* Search & Filter Bar */}
+            <div className="flex flex-wrap gap-3 mb-4">
+                <input
+                    type="text"
+                    placeholder="Search by IP address..."
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    className="px-3 py-2 bg-[#0d1117] border border-gray-800 rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-[#00ff7f]/50 w-64"
+                />
+                <select
+                    value={filterType}
+                    onChange={e => setFilterType(e.target.value)}
+                    className="px-3 py-2 bg-[#0d1117] border border-gray-800 rounded-lg text-sm text-gray-300 focus:outline-none"
+                >
+                    <option value="all">All Types</option>
+                    <option value="hard_block">Hard Block</option>
+                    <option value="temp_block">Temp Block</option>
+                    <option value="rate_limit">Rate Limit</option>
+                    <option value="quarantine">Quarantine</option>
+                </select>
+                <select
+                    value={sortBy}
+                    onChange={e => setSortBy(e.target.value)}
+                    className="px-3 py-2 bg-[#0d1117] border border-gray-800 rounded-lg text-sm text-gray-300 focus:outline-none"
+                >
+                    <option value="newest">Newest First</option>
+                    <option value="confidence">Highest Confidence</option>
+                    <option value="longest">Longest Active</option>
+                </select>
+            </div>
+
+            {/* Rules Table or Empty State */}
+            {filtered.length === 0 && !loading ? (
+                <div className="bg-[#161b22] p-12 rounded-xl border border-green-900/50 text-center">
+                    <div className="text-6xl mb-4">🛡️</div>
+                    <h3 className="text-xl font-bold text-white mb-2">All Clear — No Active Enforcement Rules</h3>
+                    <p className="text-gray-500 text-sm max-w-md mx-auto">
+                        The AI Response Agent has no threats to enforce against. Start the Detection Agent to begin monitoring.
+                    </p>
+                </div>
+            ) : (
+                <div className="bg-[#161b22] rounded-xl border border-gray-800 overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-800">
+                            <thead className="bg-[#0d1117]">
+                                <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
+                                    <th className="px-4 py-3">IP Address</th>
+                                    <th className="px-4 py-3">Rule Type</th>
+                                    <th className="px-4 py-3">Protocol</th>
+                                    <th className="px-4 py-3">Port</th>
+                                    <th className="px-4 py-3">Reason</th>
+                                    <th className="px-4 py-3">Risk Level</th>
+                                    <th className="px-4 py-3">
+                                        <span className="flex items-center gap-1">
+                                            AI Decision
+                                            <span className="relative group cursor-help">
+                                                <span className="text-gray-500">ⓘ</span>
+                                                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2 bg-[#0d1117] border border-gray-700 rounded-lg text-xs text-gray-300 font-normal normal-case tracking-normal hidden group-hover:block z-20 shadow-xl">
+                                                    Rules are generated by a two-stage AI pipeline. First, a Random Forest classifier assigns a confidence score. Then, a Reinforcement Learning agent cross-validates and issues a block action.
+                                                </span>
+                                            </span>
+                                        </span>
+                                    </th>
+                                    <th className="px-4 py-3">Active For</th>
+                                    <th className="px-4 py-3">Expiry</th>
+                                    <th className="px-4 py-3">Rollback</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-800/50">
+                                {filtered.map((rule, i) => {
+                                    const risk = riskLevel(rule.confidence || 0);
+                                    const rts = ruleTypeStyles[rule.rule_type] || ruleTypeStyles.hard_block;
+                                    const expiry = formatExpiry(rule);
+                                    const isExpanded = expandedRow === (rule.action_id || i);
+                                    return (
+                                        <React.Fragment key={rule.action_id || i}>
+                                            <tr
+                                                className="text-sm text-gray-300 hover:bg-[#1f2937]/50 cursor-pointer"
+                                                onClick={() => setExpandedRow(isExpanded ? null : (rule.action_id || i))}
+                                            >
+                                                <td className="px-4 py-3 font-mono">{rule.ip}</td>
+                                                <td className="px-4 py-3">
+                                                    <span className="flex items-center gap-1">
+                                                        <span className={`px-2 py-0.5 text-xs rounded font-bold border ${rts.bg} ${rts.text} ${rts.border}`}>
+                                                            {(rule.rule_type || '').replace(/_/g, ' ').toUpperCase()}
+                                                        </span>
+                                                        <span className="relative group cursor-help">
+                                                            <span className="text-gray-600 text-xs">ⓘ</span>
+                                                            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2 bg-[#0d1117] border border-gray-700 rounded-lg text-xs text-gray-300 font-normal hidden group-hover:block z-20 shadow-xl">
+                                                                {RULE_TOOLTIPS[rule.rule_type] || 'AI-managed enforcement rule'}
+                                                            </span>
+                                                        </span>
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className="px-2 py-0.5 rounded bg-blue-900/30 text-blue-300 text-xs">{decodeProtocol(rule.reason)}</span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className="px-2 py-0.5 rounded bg-gray-800 text-gray-400 text-xs">{decodePort(rule.reason)}</span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <div>
+                                                        <span className="text-gray-200 text-sm">{decodeReason(rule.reason)}</span>
+                                                        <span className="block text-xs text-gray-600 font-mono">{rule.reason}</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <div>
+                                                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${risk.bg} ${risk.color}`}>{risk.label}</span>
+                                                        <div className="w-16 h-1 mt-1 bg-gray-800 rounded-full overflow-hidden">
+                                                            <div className={`h-full rounded-full ${risk.bar}`} style={{ width: `${Math.min((rule.confidence || 0) * 100, 100)}%` }} />
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                                                    <div className="flex flex-col gap-0.5">
+                                                        <span className="px-1.5 py-0.5 rounded bg-green-900/30 text-green-400 text-[10px] font-bold">RF: {((rule.confidence || 0) * 100).toFixed(0)}%</span>
+                                                        <span className="px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-400 text-[10px] font-bold">RL: BLOCK</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3 font-mono text-gray-400">{formatAge(rule.age_seconds)}</td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`font-mono text-xs ${expiry.cls}`}>{expiry.text}</span>
+                                                </td>
+                                                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                                                    {confirmRollback === (rule.action_id || i) ? (
+                                                        <span className="flex items-center gap-1">
+                                                            <span className="text-xs text-gray-400">Confirm?</span>
+                                                            <button
+                                                                onClick={() => handleRollback(rule.action_id)}
+                                                                className="px-2 py-0.5 text-xs bg-red-600/30 text-red-400 rounded hover:bg-red-600/50 transition"
+                                                            >Yes</button>
+                                                            <button
+                                                                onClick={() => setConfirmRollback(null)}
+                                                                className="px-2 py-0.5 text-xs bg-gray-800 text-gray-400 rounded hover:bg-gray-700 transition"
+                                                            >No</button>
+                                                        </span>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => setConfirmRollback(rule.action_id || i)}
+                                                            className="px-2 py-1 text-xs bg-red-600/20 border border-red-500/30 text-red-400 rounded hover:bg-red-600/40 transition"
+                                                        >
+                                                            ↩ Rollback
+                                                        </button>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                            {isExpanded && (
+                                                <tr>
+                                                    <td colSpan={10} className="p-0">
+                                                        <div className={`bg-[#0a0f16] p-4 border-l-4 ${rts.borderSolid}`}>
+                                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                                                                <div>
+                                                                    <p className="text-xs text-gray-500 uppercase mb-1">iptables Command</p>
+                                                                    <code className="block bg-[#0d1117] p-2 rounded text-xs text-green-400 font-mono break-all">{getIptablesCmd(rule)}</code>
+                                                                </div>
+                                                                <div>
+                                                                    <p className="text-xs text-gray-500 uppercase mb-1">Explanation</p>
+                                                                    <p className="text-gray-400 text-xs">{getRuleExplanation(rule)}</p>
+                                                                </div>
+                                                                <div>
+                                                                    <p className="text-xs text-gray-500 uppercase mb-1">Action ID</p>
+                                                                    <p className="font-mono text-xs text-gray-500 break-all">{rule.action_id}</p>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </React.Fragment>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

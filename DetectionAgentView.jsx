@@ -501,15 +501,42 @@ const QTablePanel = ({ qTable, rlStats }) => {
     );
 };
 
+const RuleTypeBadge = ({ type }) => {
+    const styles = {
+        hard_block: 'bg-red-600/30 text-red-400 border border-red-500/30',
+        temp_block: 'bg-purple-600/30 text-purple-400 border border-purple-500/30',
+        rate_limit: 'bg-yellow-600/30 text-yellow-400 border border-yellow-500/30',
+        quarantine: 'bg-orange-600/30 text-orange-400 border border-orange-500/30',
+    };
+    return (
+        <span className={`px-2 py-0.5 rounded text-xs font-bold ${styles[type] || 'bg-gray-600/30 text-gray-400 border border-gray-500/30'}`}>
+            {(type || '').replace(/_/g, ' ').toUpperCase()}
+        </span>
+    );
+};
+
 const ResponseAgentPanel = ({ token }) => {
     const [data, setData] = useState(null);
     const [loadingRollback, setLoadingRollback] = useState(null);
+    const [lastUpdated, setLastUpdated] = useState(null);
+    const [activeTab, setActiveTab] = useState('active');
+    const [rollbackTarget, setRollbackTarget] = useState(null);
+    const [showAllHealing, setShowAllHealing] = useState(false);
+    const [now, setNow] = useState(Date.now());
     const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    useEffect(() => {
+        const tick = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(tick);
+    }, []);
 
     const fetchData = useCallback(async () => {
         try {
             const res = await fetch('/api/response/status', { headers });
-            if (res.ok) setData(await res.json());
+            if (res.ok) {
+                setData(await res.json());
+                setLastUpdated(new Date());
+            }
         } catch (e) {
             console.error('Failed to fetch response status:', e);
         }
@@ -523,8 +550,9 @@ const ResponseAgentPanel = ({ token }) => {
 
     const handleRollback = async (actionId) => {
         setLoadingRollback(actionId);
+        setRollbackTarget(null);
         try {
-            await fetch(`/api/response/rollback/${actionId}`, {
+            await fetch(`/api/response/rollback/${encodeURIComponent(actionId)}`, {
                 method: 'POST', headers
             });
             await fetchData();
@@ -542,18 +570,19 @@ const ResponseAgentPanel = ({ token }) => {
         return m > 0 ? `${m}m ${s}s` : `${s}s`;
     };
 
-    const ruleTypeBadge = (rt) => {
-        const styles = {
-            hard_block: 'bg-red-600/30 text-red-400',
-            rate_limit: 'bg-yellow-600/30 text-yellow-400',
-            quarantine: 'bg-orange-600/30 text-orange-400',
-            temp_block: 'bg-purple-600/30 text-purple-400',
-        };
-        return (
-            <span className={`px-2 py-0.5 rounded text-xs font-bold ${styles[rt] || 'bg-gray-600/30 text-gray-400'}`}>
-                {(rt || '').replace(/_/g, ' ').toUpperCase()}
-            </span>
-        );
+    const formatExpiry = (entry) => {
+        if (!entry.expires_at) return 'Permanent';
+        const remaining = Math.max(0, Math.floor(entry.expires_at - Date.now() / 1000));
+        if (remaining <= 0) return 'Expired';
+        const m = Math.floor(remaining / 60);
+        const s = remaining % 60;
+        return `${m}m ${s}s left`;
+    };
+
+    const confidenceColor = (c) => {
+        if (c > 0.8) return 'bg-red-500';
+        if (c > 0.5) return 'bg-yellow-500';
+        return 'bg-orange-500';
     };
 
     if (!data) {
@@ -565,104 +594,255 @@ const ResponseAgentPanel = ({ token }) => {
         );
     }
 
+    const statCards = [
+        { label: 'Hard Blocks', key: 'hard_blocks', color: 'text-red-400', icon: '🔴' },
+        { label: 'Temp Blocks', key: 'temp_blocks', color: 'text-purple-400', icon: '⏱' },
+        { label: 'Rate Limits', key: 'rate_limits', color: 'text-yellow-400', icon: '🟡' },
+        { label: 'Quarantines', key: 'quarantines', color: 'text-orange-400', icon: '🟠' },
+        { label: 'Self-Healed', key: 'self_healed', color: 'text-green-400', icon: '💚' },
+        { label: 'Rollbacks', key: 'rollbacks', color: 'text-blue-400', icon: '🔵' },
+    ];
+
+    const tabs = [
+        { id: 'active', label: 'Active Rules', count: data.blocked_ips?.length || 0 },
+        { id: 'history', label: 'Action History', count: data.action_history?.length || 0 },
+        { id: 'healing', label: 'Self-Healing Log', count: data.self_healing_log?.length || 0 },
+    ];
+
+    const healingLog = data.self_healing_log || [];
+    const visibleHealing = showAllHealing ? healingLog : healingLog.slice(0, 3);
+    const hiddenCount = healingLog.length - 3;
+
     return (
         <div className="space-y-6">
-            {/* Header & Stats */}
+            {/* Rollback Confirmation Modal */}
+            {rollbackTarget && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+                    <div className="bg-[#161b22] border border-gray-700 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
+                        <h3 className="text-lg font-semibold text-white mb-3">Confirm Rollback</h3>
+                        <p className="text-gray-400 text-sm mb-4">
+                            Are you sure you want to rollback the rule for{' '}
+                            <span className="font-mono bg-gray-800 text-white px-2 py-0.5 rounded">{rollbackTarget.ip}</span>?
+                        </p>
+                        <div className="flex justify-end gap-3">
+                            <button
+                                onClick={() => setRollbackTarget(null)}
+                                className="px-4 py-2 text-sm bg-gray-800 border border-gray-700 text-gray-300 rounded-lg hover:bg-gray-700 transition"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => handleRollback(rollbackTarget.action_id)}
+                                disabled={loadingRollback === rollbackTarget.action_id}
+                                className="px-4 py-2 text-sm bg-red-600/20 border border-red-500/30 text-red-400 rounded-lg hover:bg-red-600/40 transition disabled:opacity-50"
+                            >
+                                {loadingRollback === rollbackTarget.action_id ? '...' : 'Rollback'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Header */}
             <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
                 <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-semibold text-white">🛡️ Response Agent</h3>
+                    <div className="flex items-center gap-3">
+                        <h3 className="text-lg font-semibold text-white">🛡️ Response Agent</h3>
+                        <span className="flex items-center gap-1.5">
+                            <span className="relative flex h-2.5 w-2.5">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                            </span>
+                        </span>
+                        {lastUpdated && (
+                            <span className="text-xs text-gray-500">
+                                Updated {lastUpdated.toLocaleTimeString()}
+                            </span>
+                        )}
+                    </div>
                     {data.dry_run ? (
-                        <span className="px-3 py-1 rounded-full text-xs font-bold bg-yellow-600/30 text-yellow-400 border border-yellow-500/30">DRY RUN MODE</span>
+                        <span className="px-3 py-1 rounded-full text-xs font-bold bg-yellow-600/30 text-yellow-400 border border-yellow-500/30">DRY RUN</span>
                     ) : (
-                        <span className="px-3 py-1 rounded-full text-xs font-bold bg-red-600/30 text-red-400 border border-red-500/30">LIVE MODE</span>
+                        <span className="px-3 py-1 rounded-full text-xs font-bold bg-red-600/30 text-red-400 border border-red-500/30 animate-pulse">LIVE</span>
                     )}
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
-                        <p className="text-xs text-gray-500 uppercase">Hard Blocks</p>
-                        <p className="text-xl font-bold font-mono text-red-400">{data.stats?.hard_blocks || 0}</p>
-                    </div>
-                    <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
-                        <p className="text-xs text-gray-500 uppercase">Rate Limits</p>
-                        <p className="text-xl font-bold font-mono text-yellow-400">{data.stats?.rate_limits || 0}</p>
-                    </div>
-                    <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
-                        <p className="text-xs text-gray-500 uppercase">Quarantines</p>
-                        <p className="text-xl font-bold font-mono text-orange-400">{data.stats?.quarantines || 0}</p>
-                    </div>
-                    <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
-                        <p className="text-xs text-gray-500 uppercase">Self-Healed</p>
-                        <p className="text-xl font-bold font-mono text-[#00ff7f]">{data.stats?.self_healed || 0}</p>
-                    </div>
+
+                {/* 6 Stat Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                    {statCards.map(({ label, key, color, icon }) => (
+                        <div key={key} className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
+                            <p className="text-xs text-gray-500 uppercase flex items-center gap-1">
+                                <span>{icon}</span> {label}
+                            </p>
+                            <p className={`text-xl font-bold font-mono ${color}`}>{data.stats?.[key] || 0}</p>
+                        </div>
+                    ))}
                 </div>
             </div>
 
-            {/* Active Enforcement Rules */}
-            <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
-                <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
-                    Active Enforcement Rules ({data.total_blocked || 0})
-                </h3>
-                {(!data.blocked_ips || data.blocked_ips.length === 0) ? (
-                    <p className="text-gray-500 text-sm text-center py-4">No active enforcement rules</p>
-                ) : (
-                    <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-gray-800">
-                            <thead>
-                                <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
-                                    <th className="px-3 py-2">IP Address</th>
-                                    <th className="px-3 py-2">Rule Type</th>
-                                    <th className="px-3 py-2">Confidence</th>
-                                    <th className="px-3 py-2">Reason</th>
-                                    <th className="px-3 py-2">Age</th>
-                                    <th className="px-3 py-2">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-800/50">
-                                {data.blocked_ips.map((entry, idx) => (
-                                    <tr key={idx} className="text-sm hover:bg-[#1f2937]/50">
-                                        <td className="px-3 py-2 font-mono text-gray-300">{entry.ip}</td>
-                                        <td className="px-3 py-2">{ruleTypeBadge(entry.rule_type)}</td>
-                                        <td className="px-3 py-2 font-mono text-gray-300">{entry.confidence?.toFixed(3)}</td>
-                                        <td className="px-3 py-2 text-gray-400">{entry.reason}</td>
-                                        <td className="px-3 py-2 text-gray-400 font-mono">{formatAge(entry.age_seconds)}</td>
-                                        <td className="px-3 py-2">
-                                            <button
-                                                onClick={() => handleRollback(entry.action_id)}
-                                                disabled={loadingRollback === entry.action_id}
-                                                className="px-2 py-1 text-xs bg-red-600/20 border border-red-500/30 text-red-400 rounded hover:bg-red-600/40 transition disabled:opacity-50"
-                                            >
-                                                {loadingRollback === entry.action_id ? '...' : 'Undo'}
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                )}
+            {/* Tab Switcher */}
+            <div className="flex gap-2">
+                {tabs.map(tab => (
+                    <button
+                        key={tab.id}
+                        onClick={() => setActiveTab(tab.id)}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 ${
+                            activeTab === tab.id
+                                ? 'bg-[#00ff7f]/20 text-[#00ff7f] border border-[#00ff7f]/30'
+                                : 'bg-[#161b22] text-gray-400 border border-gray-800 hover:text-white'
+                        }`}
+                    >
+                        {tab.label}
+                        <span className={`px-1.5 py-0.5 rounded-full text-xs font-mono ${
+                            activeTab === tab.id ? 'bg-[#00ff7f]/30 text-[#00ff7f]' : 'bg-gray-800 text-gray-500'
+                        }`}>
+                            {tab.count}
+                        </span>
+                    </button>
+                ))}
             </div>
 
-            {/* Self-Healing Log */}
-            <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
-                <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Self-Healing Log</h3>
-                {(!data.self_healing_log || data.self_healing_log.length === 0) ? (
-                    <p className="text-gray-500 text-sm text-center py-4">No auto-unblock events yet</p>
-                ) : (
-                    <div className="space-y-2">
-                        {data.self_healing_log.map((entry, idx) => (
-                            <div key={idx} className="flex items-center gap-3 text-sm py-1">
-                                <span className="text-[#00ff7f]">●</span>
-                                <span className="text-gray-500 font-mono text-xs">
-                                    {new Date(entry.timestamp * 1000).toLocaleTimeString()}
-                                </span>
-                                <span className="text-gray-300">
-                                    Auto-unblocked <span className="font-mono text-white">{entry.ip}</span> — {entry.reason?.replace(/_/g, ' ')}
-                                </span>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
+            {/* Active Rules Tab */}
+            {activeTab === 'active' && (
+                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                    <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
+                        Active Enforcement Rules ({data.total_blocked || 0})
+                    </h3>
+                    {(!data.blocked_ips || data.blocked_ips.length === 0) ? (
+                        <div className="text-center py-10">
+                            <span className="text-4xl">✅</span>
+                            <p className="text-gray-500 text-sm mt-3">No active enforcement rules</p>
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-gray-800">
+                                <thead>
+                                    <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
+                                        <th className="px-3 py-2">IP Address</th>
+                                        <th className="px-3 py-2">Rule Type</th>
+                                        <th className="px-3 py-2">Reason</th>
+                                        <th className="px-3 py-2">Confidence</th>
+                                        <th className="px-3 py-2">Active For</th>
+                                        <th className="px-3 py-2">Expiry</th>
+                                        <th className="px-3 py-2">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-800/50">
+                                    {data.blocked_ips.map((entry, idx) => {
+                                        const conf = entry.confidence || 0;
+                                        return (
+                                            <tr key={idx} className="text-sm hover:bg-[#1f2937]/50">
+                                                <td className="px-3 py-2 font-mono text-gray-300">{entry.ip}</td>
+                                                <td className="px-3 py-2"><RuleTypeBadge type={entry.rule_type} /></td>
+                                                <td className="px-3 py-2 text-gray-400 max-w-[180px] truncate" title={entry.reason}>{entry.reason}</td>
+                                                <td className="px-3 py-2">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                                            <div className={`h-full rounded-full ${confidenceColor(conf)}`} style={{ width: `${Math.min(conf * 100, 100)}%` }} />
+                                                        </div>
+                                                        <span className="text-gray-300 font-mono text-xs">{(conf * 100).toFixed(0)}%</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-3 py-2 text-gray-400 font-mono">{formatAge(entry.age_seconds)}</td>
+                                                <td className="px-3 py-2 text-gray-400 font-mono text-xs">{formatExpiry(entry)}</td>
+                                                <td className="px-3 py-2">
+                                                    <button
+                                                        onClick={() => setRollbackTarget(entry)}
+                                                        disabled={loadingRollback === entry.action_id}
+                                                        className="px-2 py-1 text-xs bg-red-600/20 border border-red-500/30 text-red-400 rounded hover:bg-red-600/40 transition disabled:opacity-50"
+                                                    >
+                                                        {loadingRollback === entry.action_id ? '...' : 'Rollback'}
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Action History Tab */}
+            {activeTab === 'history' && (
+                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                    <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Action History</h3>
+                    {(!data.action_history || data.action_history.length === 0) ? (
+                        <p className="text-gray-500 text-sm text-center py-4">No actions recorded yet</p>
+                    ) : (
+                        <div className="relative pl-6">
+                            <div className="absolute left-2.5 top-0 bottom-0 w-px bg-gray-700"></div>
+                            {data.action_history.map((entry, idx) => (
+                                <div
+                                    key={idx}
+                                    className={`relative mb-4 ${entry.reversed ? 'opacity-50' : ''}`}
+                                >
+                                    <div className="absolute -left-3.5 top-1.5 w-3 h-3 rounded-full border-2 border-gray-700 bg-[#161b22]"></div>
+                                    <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="font-mono text-white text-sm bg-gray-800 px-2 py-0.5 rounded">{entry.ip}</span>
+                                            <RuleTypeBadge type={entry.rule_type} />
+                                            {entry.reversed && (
+                                                <span className="text-xs italic text-gray-500">reversed</span>
+                                            )}
+                                        </div>
+                                        <div className="mt-1 flex items-center gap-3 text-xs text-gray-500">
+                                            <span className="font-mono">{entry.timestamp ? new Date(entry.timestamp * 1000).toLocaleString() : ''}</span>
+                                            <span className="text-gray-400">{entry.reason}</span>
+                                            {entry.confidence != null && (
+                                                <span className="font-mono text-gray-400">{(entry.confidence * 100).toFixed(0)}%</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Self-Healing Log Tab */}
+            {activeTab === 'healing' && (
+                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                    <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Self-Healing Log</h3>
+                    {healingLog.length === 0 ? (
+                        <p className="text-gray-500 text-sm text-center py-4">No auto-unblock events yet</p>
+                    ) : (
+                        <div className="space-y-3">
+                            {visibleHealing.map((entry, idx) => (
+                                <div key={idx} className="bg-[#0d1117] p-3 rounded-lg border border-gray-800 flex items-start gap-3">
+                                    <span className="text-green-400 text-lg mt-0.5">🔄</span>
+                                    <div className="flex-1">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="font-mono text-white text-sm">{entry.ip}</span>
+                                            <RuleTypeBadge type={entry.original_rule_type || entry.rule_type} />
+                                        </div>
+                                        <div className="mt-1 flex items-center gap-3 text-xs text-gray-500">
+                                            <span className="font-mono">
+                                                {entry.reversed_at
+                                                    ? new Date(entry.reversed_at * 1000).toLocaleString()
+                                                    : entry.timestamp
+                                                        ? new Date(entry.timestamp * 1000).toLocaleString()
+                                                        : ''}
+                                            </span>
+                                            <span className="text-gray-400">{(entry.reason || '').replace(/_/g, ' ')}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                            {healingLog.length > 3 && (
+                                <button
+                                    onClick={() => setShowAllHealing(prev => !prev)}
+                                    className="w-full py-2 text-xs text-gray-400 hover:text-white border border-gray-800 rounded-lg hover:border-gray-600 transition"
+                                >
+                                    {showAllHealing ? 'Show less' : `Show ${hiddenCount} more`}
+                                </button>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 };
