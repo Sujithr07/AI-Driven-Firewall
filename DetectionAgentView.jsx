@@ -1,16 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-
-const BrainIcon = (props) => (
-    <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg>
-);
-
-const PlayIcon = (props) => (
-    <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-);
-
-const StopIcon = (props) => (
-    <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-);
+import { BrainIcon, PlayIcon, StopIcon, SearchIcon, ShieldIcon, ActivityIcon, EyeIcon, ChevronRightIcon, RefreshIcon } from './icons';
+import { formatTimestamp, getRelativeTime, getSeverityClass } from './utils';
 
 const SEVERITY_COLORS = {
     High: 'bg-red-900/50 text-red-400 border-red-500',
@@ -18,18 +8,17 @@ const SEVERITY_COLORS = {
     Low: 'bg-green-900/50 text-green-400 border-green-500',
 };
 
-const XAI_FEATURE_LABELS = {
-    proto_num: 'Protocol Type',
-    sport: 'Source Port',
-    dport: 'Dest Port',
-    packet_size: 'Packet Size',
-    src_is_private: 'Src IP Private',
-    dst_is_private: 'Dst IP Private',
-    has_syn: 'SYN Flag (scan)',
-    has_fin: 'FIN Flag',
-    has_rst: 'RST Flag',
-    port_is_suspicious: 'Suspicious Port',
-    port_is_well_known: 'Known Safe Port',
+const RuleTypeBadge = ({ type }) => {
+    const map = {
+        rate_limit: 'bg-yellow-900/40 text-yellow-400 border-yellow-500',
+        block: 'bg-red-900/40 text-red-400 border-red-500',
+        quarantine: 'bg-orange-900/40 text-orange-400 border-orange-500',
+    };
+    return (
+        <span className={`px-2 py-0.5 rounded-full text-xs font-bold border ${map[type] || 'bg-gray-800 text-gray-400 border-gray-600'}`}>
+            {(type || 'unknown').replace('_', ' ').toUpperCase()}
+        </span>
+    );
 };
 
 const DetectionAgentView = ({ token, onNavigateToXAI }) => {
@@ -41,71 +30,40 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
     const [activeTab, setActiveTab] = useState('live');
     const [starting, setStarting] = useState(false);
     const [responseStatus, setResponseStatus] = useState(null);
-    const [xaiLatest, setXaiLatest] = useState(null);
+    const [selectedDetection, setSelectedDetection] = useState(null);
+    const [qSearch, setQSearch] = useState('');
+    const [liveSevFilter, setLiveSevFilter] = useState('all');
+    const [healingLog, setHealingLog] = useState([]);
+    const [showAllHealing, setShowAllHealing] = useState(false);
 
     const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 
     const fetchStatus = useCallback(async () => {
         try {
             const res = await fetch('/api/agent/status', { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setAgentStatus(data);
-            }
-        } catch (e) {
-            console.error('Failed to fetch agent status:', e);
-        }
+            if (res.ok) setAgentStatus(await res.json());
+        } catch (e) { console.error('Failed to fetch agent status:', e); }
     }, [token]);
 
     const fetchDetections = useCallback(async () => {
         try {
             const res = await fetch('/api/agent/detections?limit=100', { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setDetections(data.detections || []);
-            }
-        } catch (e) {
-            console.error('Failed to fetch detections:', e);
-        }
+            if (res.ok) { const data = await res.json(); setDetections(data.detections || []); }
+        } catch (e) { console.error('Failed to fetch detections:', e); }
     }, [token]);
 
     const fetchQTable = useCallback(async () => {
         try {
             const res = await fetch('/api/agent/qtable', { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setQTable(data.q_table || []);
-                setRlStats(data.stats || null);
-            }
-        } catch (e) {
-            console.error('Failed to fetch Q-table:', e);
-        }
+            if (res.ok) { const data = await res.json(); setQTable(data.q_table || []); setRlStats(data.stats || null); }
+        } catch (e) { console.error('Failed to fetch Q-table:', e); }
     }, [token]);
 
     const fetchResponseStatus = useCallback(async () => {
         try {
             const res = await fetch('/api/response/status', { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setResponseStatus(data);
-            }
-        } catch (e) {
-            console.error('Failed to fetch response status:', e);
-        }
-    }, [token]);
-
-    const fetchXAILatest = useCallback(async () => {
-        try {
-            const res = await fetch('/api/xai/explain?limit=1', { headers });
-            if (res.ok) {
-                const data = await res.json();
-                if (data.detections && data.detections.length > 0) {
-                    setXaiLatest(data.detections[0]);
-                }
-            }
-        } catch (e) {
-            console.error('Failed to fetch XAI latest:', e);
-        }
+            if (res.ok) setResponseStatus(await res.json());
+        } catch (e) { console.error('Failed to fetch response status:', e); }
     }, [token]);
 
     useEffect(() => {
@@ -113,44 +71,39 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
             await fetchStatus();
             await fetchDetections();
             await fetchQTable();
+            await fetchResponseStatus();
+            // Try to get healing log
+            try {
+                const hRes = await fetch('/api/response/healing-log', { headers });
+                if (hRes.ok) { const d = await hRes.json(); setHealingLog(d.log || d.healing_log || []); }
+            } catch (e) { /* no healing endpoint */ }
             setLoading(false);
         };
         init();
+
         const interval = setInterval(() => {
             fetchStatus();
             fetchDetections();
-            fetchXAILatest();
-            if (activeTab === 'qtable') fetchQTable();
-            if (activeTab === 'response') fetchResponseStatus();
-        }, 3000);
+            fetchQTable();
+            fetchResponseStatus();
+        }, 5000);
         return () => clearInterval(interval);
-    }, [activeTab, fetchStatus, fetchDetections, fetchQTable, fetchResponseStatus, fetchXAILatest]);
+    }, [fetchStatus, fetchDetections, fetchQTable, fetchResponseStatus]);
 
-    const startAgent = async (simulation = true) => {
+    const startAgent = async (mode) => {
         setStarting(true);
         try {
-            const res = await fetch('/api/agent/start', {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({ simulation }),
-            });
-            if (res.ok) {
-                await fetchStatus();
-            }
-        } catch (e) {
-            console.error('Failed to start agent:', e);
-        } finally {
-            setStarting(false);
-        }
+            await fetch(`/api/agent/${mode}`, { method: 'POST', headers });
+            setTimeout(fetchStatus, 1000);
+        } catch (e) { console.error('Failed to start agent:', e); }
+        finally { setStarting(false); }
     };
 
     const stopAgent = async () => {
         try {
             await fetch('/api/agent/stop', { method: 'POST', headers });
-            await fetchStatus();
-        } catch (e) {
-            console.error('Failed to stop agent:', e);
-        }
+            setTimeout(fetchStatus, 1000);
+        } catch (e) { console.error('Failed to stop agent:', e); }
     };
 
     if (loading) {
@@ -162,690 +115,477 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
     }
 
     const isRunning = agentStatus?.running;
+    const mode = agentStatus?.mode || 'unknown';
+    const totalDetections = agentStatus?.total_detections || detections.length;
+    const blockedCount = detections.filter(d => d.rl_action === 'block').length;
+    const allowedCount = detections.filter(d => d.rl_action === 'allow').length;
+
+    // Filter detections
+    const filteredDetections = detections.filter(d => {
+        if (liveSevFilter === 'all') return true;
+        return d.severity === liveSevFilter;
+    });
+
+    // Filter Q-table
+    const filteredQTable = qTable.filter(q =>
+        qSearch === '' || (q.state || '').toLowerCase().includes(qSearch.toLowerCase())
+    );
+
+    // Response agent stats
+    const activeRules = responseStatus?.active_rules || [];
+    const responseConfig = responseStatus?.config || {};
+
+    const visibleHealing = showAllHealing ? healingLog : healingLog.slice(0, 3);
+
+    const tabs = [
+        { id: 'live', label: 'Live Feed', icon: ActivityIcon },
+        { id: 'qtable', label: 'Q-Table', icon: BrainIcon },
+        { id: 'response', label: 'Response Agent', icon: ShieldIcon },
+        { id: 'viz', label: 'Visualizations', icon: EyeIcon },
+    ];
 
     return (
         <div className="p-8">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-6">
-                <div className="flex items-center">
-                    <BrainIcon className="w-8 h-8 text-[#00ff7f] mr-3" />
+            {/* HEADER */}
+            <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-4">
+                    <BrainIcon className="w-9 h-9 text-[#00ff7f]" />
                     <div>
                         <h2 className="text-3xl font-bold text-white">Detection Agent</h2>
-                        <p className="text-gray-400 text-sm">RL-Powered Network Intrusion Detection</p>
+                        <div className="flex items-center gap-2 mt-1">
+                            <span className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                                isRunning ? 'bg-green-900/50 text-green-400 border border-green-500/30' : 'bg-gray-800 text-gray-400 border border-gray-700'
+                            }`}>
+                                <span className={`h-2 w-2 rounded-full ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-gray-500'}`} />
+                                {isRunning ? 'RUNNING' : 'STOPPED'}
+                            </span>
+                            {isRunning && (
+                                <span className="px-2 py-0.5 rounded-full text-xs bg-blue-900/40 text-blue-300 border border-blue-500/30">
+                                    {mode === 'simulation' ? 'Simulation Mode' : 'Live Capture'}
+                                </span>
+                            )}
+                        </div>
                     </div>
                 </div>
-                <div className="flex items-center gap-3">
-                    {isRunning ? (
+                {onNavigateToXAI && (
+                    <button
+                        onClick={onNavigateToXAI}
+                        className="flex items-center gap-1 text-sm text-[#00ff7f] hover:text-white transition"
+                    >
+                        View AI Transparency <ChevronRightIcon className="w-4 h-4" />
+                    </button>
+                )}
+            </div>
+
+            {/* AGENT CONTROLS */}
+            <div className="bg-[#161b22] p-6 rounded-xl border border-gray-800 shadow-lg mb-6">
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Agent Controls</h3>
+                {!isRunning ? (
+                    <div className="flex gap-4">
+                        <div className="flex-1">
+                            <button
+                                onClick={() => startAgent('start')}
+                                disabled={starting}
+                                className="w-full flex items-center justify-center gap-2 py-3 bg-[#00ff7f] hover:bg-[#00ff7f]/80 text-black font-bold rounded-lg transition disabled:opacity-50"
+                            >
+                                <PlayIcon className="w-5 h-5" />
+                                {starting ? 'Starting...' : 'Start Simulation'}
+                            </button>
+                            <p className="text-xs text-gray-500 mt-1.5 text-center">Generates synthetic traffic for analysis</p>
+                        </div>
+                        <div className="flex-1">
+                            <button
+                                onClick={() => startAgent('start-live')}
+                                disabled={starting}
+                                className="w-full flex items-center justify-center gap-2 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition disabled:opacity-50"
+                            >
+                                <PlayIcon className="w-5 h-5" />
+                                {starting ? 'Starting...' : 'Start Live Capture'}
+                            </button>
+                            <p className="text-xs text-gray-500 mt-1.5 text-center">Real network interface (requires root/admin)</p>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2 bg-green-900/20 px-4 py-2 rounded-lg border border-green-500/20">
+                                <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
+                                <span className="text-green-400 text-sm font-medium">Agent Active — {totalDetections} detections</span>
+                            </div>
+                            <span className="text-xs text-gray-500">
+                                ε = {agentStatus?.epsilon?.toFixed(4) || 'N/A'}
+                            </span>
+                        </div>
                         <button
                             onClick={stopAgent}
-                            className="flex items-center gap-2 px-4 py-2 bg-red-600/20 border border-red-500 text-red-400 rounded-lg hover:bg-red-600/40 transition"
+                            className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition"
                         >
-                            <StopIcon className="w-4 h-4" /> Stop Agent
+                            <StopIcon className="w-5 h-5" /> Stop Agent
                         </button>
-                    ) : (
-                        <>
-                            <button
-                                onClick={() => startAgent(true)}
-                                disabled={starting}
-                                className="flex items-center gap-2 px-4 py-2 bg-[#00ff7f]/20 border border-[#00ff7f] text-[#00ff7f] rounded-lg hover:bg-[#00ff7f]/40 transition disabled:opacity-50"
-                            >
-                                <PlayIcon className="w-4 h-4" /> {starting ? 'Starting...' : 'Start (Simulation)'}
-                            </button>
-                            <button
-                                onClick={() => startAgent(false)}
-                                disabled={starting}
-                                className="flex items-center gap-2 px-4 py-2 bg-blue-600/20 border border-blue-500 text-blue-400 rounded-lg hover:bg-blue-600/40 transition disabled:opacity-50"
-                                title="Requires administrator privileges"
-                            >
-                                <PlayIcon className="w-4 h-4" /> {starting ? 'Starting...' : 'Start (Live Capture)'}
-                            </button>
-                        </>
-                    )}
-                </div>
-            </div>
-
-            {/* Status Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-4 mb-6">
-                <StatusCard label="Status" value={isRunning ? 'ACTIVE' : 'STOPPED'} color={isRunning ? 'text-[#00ff7f]' : 'text-red-400'} />
-                <StatusCard label="Packets Processed" value={agentStatus?.packets_processed || 0} color="text-white" />
-                <StatusCard label="Attacks Detected" value={agentStatus?.attacks_detected || 0} color="text-red-400" />
-                <StatusCard label="RL Accuracy" value={`${agentStatus?.rl_stats?.accuracy || 0}%`} color="text-blue-400" />
-                <StatusCard label="Exploration (ε)" value={agentStatus?.rl_stats?.exploration_rate || '100%'} color="text-yellow-400" />
-                <StatusCard label="Hard Blocked" value={agentStatus?.response_stats?.stats?.hard_blocks || 0} color="text-red-400" />
-                <StatusCard label="Self-Healed" value={agentStatus?.response_stats?.stats?.self_healed || 0} color="text-[#00ff7f]" />
-            </div>
-
-            {/* RL Stats Detail */}
-            {agentStatus?.rl_stats && (
-                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800 mb-6">
-                    <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Reinforcement Learning Agent</h3>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                        <div>
-                            <span className="text-gray-500">Total Decisions:</span>
-                            <span className="text-white ml-2 font-mono">{agentStatus.rl_stats.total_decisions}</span>
-                        </div>
-                        <div>
-                            <span className="text-gray-500">Correct:</span>
-                            <span className="text-[#00ff7f] ml-2 font-mono">{agentStatus.rl_stats.correct_decisions}</span>
-                        </div>
-                        <div>
-                            <span className="text-gray-500">Q-Table States:</span>
-                            <span className="text-blue-400 ml-2 font-mono">{agentStatus.rl_stats.q_table_size}</span>
-                        </div>
-                        <div>
-                            <span className="text-gray-500">Avg Reward (last 100):</span>
-                            <span className={`ml-2 font-mono ${agentStatus.rl_stats.avg_reward_last_100 >= 0 ? 'text-[#00ff7f]' : 'text-red-400'}`}>
-                                {agentStatus.rl_stats.avg_reward_last_100}
-                            </span>
-                        </div>
                     </div>
-                    {/* Epsilon Progress Bar */}
-                    <div className="mt-3">
-                        <div className="flex justify-between text-xs text-gray-500 mb-1">
-                            <span>Exploration → Exploitation</span>
-                            <span>{agentStatus.rl_stats.exploration_rate}</span>
-                        </div>
-                        <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
-                            <div
-                                className="h-full bg-gradient-to-r from-yellow-500 to-[#00ff7f] transition-all duration-500"
-                                style={{ width: `${(1 - agentStatus.rl_stats.epsilon) * 100}%` }}
-                            />
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* XAI Mini Insight Strip */}
-            {xaiLatest && (
-                <div className="bg-[#161b22] border border-[#00ff7f]/20 rounded-xl p-4 mb-4">
-                    <div className="flex justify-between items-center">
-                        <div>
-                            <div className="flex items-center gap-2 text-sm">
-                                <span>🔍</span>
-                                <span className="text-gray-400">Latest Explanation:</span>
-                                <span className="font-mono text-[#00ff7f]">{xaiLatest.src_ip}</span>
-                                <span className="text-gray-500">—</span>
-                                <span className="text-white">{XAI_FEATURE_LABELS[xaiLatest.top_feature] || xaiLatest.top_feature}</span>
-                                <span className="text-gray-400">was the top signal</span>
-                                <span className="text-yellow-400 font-mono">({xaiLatest.top_feature_contribution >= 0 ? '+' : ''}{xaiLatest.top_feature_contribution?.toFixed(2)})</span>
-                            </div>
-                            <div className="flex items-center gap-2 mt-1 text-xs">
-                                <span className={`inline-block w-2 h-2 rounded-full ${xaiLatest.rf_confidence >= 0.6 ? 'bg-red-500' : xaiLatest.rf_confidence >= 0.3 ? 'bg-yellow-500' : 'bg-green-500'}`}></span>
-                                <span className="text-gray-400">Confidence: {(xaiLatest.rf_confidence * 100).toFixed(0)}%</span>
-                                <span className={xaiLatest.rf_confidence >= 0.6 ? 'text-red-400' : xaiLatest.rf_confidence >= 0.3 ? 'text-yellow-400' : 'text-green-400'}>
-                                    {xaiLatest.rf_confidence >= 0.6 ? 'HIGH THREAT' : xaiLatest.rf_confidence >= 0.3 ? 'UNCERTAIN' : 'LOW THREAT'}
-                                </span>
-                            </div>
-                        </div>
-                        {onNavigateToXAI && (
-                            <button
-                                onClick={onNavigateToXAI}
-                                className="px-4 py-2 bg-[#00ff7f]/20 border border-[#00ff7f] text-[#00ff7f] rounded-lg hover:bg-[#00ff7f]/40 transition text-sm whitespace-nowrap"
-                            >
-                                Full XAI →
-                            </button>
-                        )}
-                    </div>
-                </div>
-            )}
-
-            {/* Tab Switcher */}
-            <div className="flex gap-2 mb-4">
-                {[
-                    { id: 'live', label: 'Live Detections' },
-                    { id: 'qtable', label: 'Q-Table' },
-                    { id: 'response', label: '🛡️ Response Agent' },
-                    { id: 'viz', label: '📊 Visualizations' },
-                ].map(tab => (
-                    <button
-                        key={tab.id}
-                        onClick={() => { setActiveTab(tab.id); if (tab.id === 'qtable') fetchQTable(); }}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                            activeTab === tab.id
-                                ? 'bg-[#00ff7f]/20 text-[#00ff7f] border border-[#00ff7f]/30'
-                                : 'bg-[#161b22] text-gray-400 border border-gray-800 hover:text-white'
-                        }`}
-                    >
-                        {tab.label}
-                    </button>
-                ))}
+                )}
             </div>
 
-            {/* Tab Content */}
-            {activeTab === 'live' && <LiveDetectionsPanel detections={detections} />}
-            {activeTab === 'qtable' && <QTablePanel qTable={qTable} rlStats={rlStats} />}
-            {activeTab === 'response' && <ResponseAgentPanel token={token} />}
-            {activeTab === 'viz' && <VisualizationsPanel token={token} />}
-        </div>
-    );
-};
-
-// --- Sub-Components ---
-
-const StatusCard = ({ label, value, color }) => (
-    <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
-        <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">{label}</p>
-        <p className={`text-2xl font-bold font-mono ${color}`}>{value}</p>
-    </div>
-);
-
-const LiveDetectionsPanel = ({ detections }) => {
-    if (!detections || detections.length === 0) {
-        return (
-            <div className="bg-[#161b22] p-8 rounded-xl border border-gray-800 text-center">
-                <BrainIcon className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-                <p className="text-gray-500">No detections yet. Start the agent to begin monitoring.</p>
-            </div>
-        );
-    }
-
-    // Show newest first
-    const sorted = [...detections].reverse();
-
-    return (
-        <div className="bg-[#161b22] rounded-xl border border-gray-800 overflow-hidden">
-            <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
-                <table className="min-w-full divide-y divide-gray-800">
-                    <thead className="sticky top-0 bg-[#161b22] z-10">
-                        <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
-                            <th className="px-3 py-3">Time</th>
-                            <th className="px-3 py-3">Source</th>
-                            <th className="px-3 py-3">Destination</th>
-                            <th className="px-3 py-3">Proto</th>
-                            <th className="px-3 py-3">Port</th>
-                            <th className="px-3 py-3">Size</th>
-                            <th className="px-3 py-3">RF Pred</th>
-                            <th className="px-3 py-3">RF Conf</th>
-                            <th className="px-3 py-3">RL Action</th>
-                            <th className="px-3 py-3">Response</th>
-                            <th className="px-3 py-3">Reward</th>
-                            <th className="px-3 py-3">Explore?</th>
-                            <th className="px-3 py-3">Reason</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-800/50">
-                        {sorted.map((d, idx) => (
-                            <tr key={idx} className={`text-xs hover:bg-[#1f2937]/50 ${d.is_malicious ? 'bg-red-950/20' : ''} ${d.response_action === 'hard_block' ? 'border-l-2 border-red-500 bg-red-950/20' : ''} ${d.response_action === 'rate_limit' ? 'border-l-2 border-yellow-500 bg-yellow-950/10' : ''} ${d.response_action === 'quarantine' ? 'border-l-2 border-orange-500 bg-orange-950/10' : ''}`}>
-                                <td className="px-3 py-2 text-gray-300 font-mono whitespace-nowrap">
-                                    {new Date(d.timestamp).toLocaleTimeString()}
-                                </td>
-                                <td className="px-3 py-2 text-gray-300 font-mono">{d.src_ip}</td>
-                                <td className="px-3 py-2 text-gray-300 font-mono">{d.dst_ip}</td>
-                                <td className="px-3 py-2">
-                                    <span className="px-2 py-0.5 rounded bg-blue-900/30 text-blue-300">{d.protocol}</span>
-                                </td>
-                                <td className="px-3 py-2 text-gray-300 font-mono">{d.dport}</td>
-                                <td className="px-3 py-2 text-gray-400">{d.size}B</td>
-                                <td className="px-3 py-2">
-                                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-                                        d.rf_prediction === 'attack' ? 'bg-red-900/40 text-red-300' : 'bg-green-900/40 text-green-300'
-                                    }`}>
-                                        {d.rf_prediction}
-                                    </span>
-                                </td>
-                                <td className="px-3 py-2 text-gray-300 font-mono">{(d.rf_confidence * 100).toFixed(0)}%</td>
-                                <td className="px-3 py-2">
-                                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-                                        d.rl_action === 'block' ? 'bg-red-600/30 text-red-400' : 'bg-green-600/30 text-green-400'
-                                    }`}>
-                                        {d.rl_action.toUpperCase()}
-                                    </span>
-                                </td>
-                                <td className="px-3 py-2">
-                                    {d.response_action === 'hard_block' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-red-600/30 text-red-400">🔴 HARD BLOCK</span>
-                                    ) : d.response_action === 'rate_limit' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-yellow-600/30 text-yellow-400">🟡 RATE LIMIT</span>
-                                    ) : d.response_action === 'quarantine' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-orange-600/30 text-orange-400">🟠 QUARANTINE</span>
-                                    ) : d.response_action === 'temp_block' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-purple-600/30 text-purple-400">⏱ TEMP BLOCK</span>
-                                    ) : d.response_action === 'already_blocked' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-gray-600/30 text-gray-400">🔒 REPEAT</span>
-                                    ) : (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-green-600/30 text-green-400">✅ ALLOWED</span>
-                                    )}
-                                </td>
-                                <td className="px-3 py-2 font-mono">
-                                    <span className={d.rl_reward > 0 ? 'text-[#00ff7f]' : 'text-red-400'}>
-                                        {d.rl_reward > 0 ? '+1' : '-1'}
-                                    </span>
-                                </td>
-                                <td className="px-3 py-2">
-                                    {d.was_exploration ? (
-                                        <span className="text-yellow-400">🎲</span>
-                                    ) : (
-                                        <span className="text-[#00ff7f]">🧠</span>
-                                    )}
-                                </td>
-                                <td className="px-3 py-2 text-gray-400 max-w-[150px] truncate" title={d.reason}>
-                                    {d.reason}
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
-};
-
-const QTablePanel = ({ qTable, rlStats }) => {
-    if (!qTable || qTable.length === 0) {
-        return (
-            <div className="bg-[#161b22] p-8 rounded-xl border border-gray-800 text-center">
-                <p className="text-gray-500">Q-Table is empty. Start the agent to build learned states.</p>
-            </div>
-        );
-    }
-
-    return (
-        <div className="space-y-4">
-            <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
-                <p className="text-gray-400 text-sm mb-2">
-                    The Q-Table maps <span className="text-white font-mono">(reason, ip_type, protocol, port_type)</span> states
-                    to learned Q-values for <span className="text-green-400 font-mono">allow</span> and <span className="text-red-400 font-mono">block</span> actions.
-                    Higher absolute difference = higher confidence in the best action.
-                </p>
-            </div>
-            <div className="bg-[#161b22] rounded-xl border border-gray-800 overflow-hidden">
-                <div className="overflow-x-auto max-h-[55vh] overflow-y-auto">
-                    <table className="min-w-full divide-y divide-gray-800">
-                        <thead className="sticky top-0 bg-[#161b22] z-10">
-                            <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
-                                <th className="px-4 py-3">State (reason|ip_type|protocol|port_type)</th>
-                                <th className="px-4 py-3">Q(allow)</th>
-                                <th className="px-4 py-3">Q(block)</th>
-                                <th className="px-4 py-3">Best Action</th>
-                                <th className="px-4 py-3">Confidence</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-800/50">
-                            {qTable.map((entry, idx) => (
-                                <tr key={idx} className="text-sm hover:bg-[#1f2937]/50">
-                                    <td className="px-4 py-2 font-mono text-gray-300 text-xs">
-                                        {entry.state.split('|').map((part, i) => (
-                                            <span key={i}>
-                                                {i > 0 && <span className="text-gray-600"> | </span>}
-                                                <span className="text-blue-300">{part}</span>
-                                            </span>
-                                        ))}
-                                    </td>
-                                    <td className="px-4 py-2 font-mono text-green-400">{entry.allow_q}</td>
-                                    <td className="px-4 py-2 font-mono text-red-400">{entry.block_q}</td>
-                                    <td className="px-4 py-2">
-                                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-                                            entry.best_action === 'block' ? 'bg-red-600/30 text-red-400' : 'bg-green-600/30 text-green-400'
-                                        }`}>
-                                            {entry.best_action.toUpperCase()}
-                                        </span>
-                                    </td>
-                                    <td className="px-4 py-2">
-                                        <div className="flex items-center gap-2">
-                                            <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                                                <div
-                                                    className="h-full bg-[#00ff7f] rounded-full"
-                                                    style={{ width: `${Math.min(entry.confidence * 100, 100)}%` }}
-                                                />
-                                            </div>
-                                            <span className="text-gray-400 text-xs font-mono">{entry.confidence}</span>
-                                        </div>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-const RuleTypeBadge = ({ type }) => {
-    const styles = {
-        hard_block: 'bg-red-600/30 text-red-400 border border-red-500/30',
-        temp_block: 'bg-purple-600/30 text-purple-400 border border-purple-500/30',
-        rate_limit: 'bg-yellow-600/30 text-yellow-400 border border-yellow-500/30',
-        quarantine: 'bg-orange-600/30 text-orange-400 border border-orange-500/30',
-    };
-    return (
-        <span className={`px-2 py-0.5 rounded text-xs font-bold ${styles[type] || 'bg-gray-600/30 text-gray-400 border border-gray-500/30'}`}>
-            {(type || '').replace(/_/g, ' ').toUpperCase()}
-        </span>
-    );
-};
-
-const ResponseAgentPanel = ({ token }) => {
-    const [data, setData] = useState(null);
-    const [loadingRollback, setLoadingRollback] = useState(null);
-    const [lastUpdated, setLastUpdated] = useState(null);
-    const [activeTab, setActiveTab] = useState('active');
-    const [rollbackTarget, setRollbackTarget] = useState(null);
-    const [showAllHealing, setShowAllHealing] = useState(false);
-    const [now, setNow] = useState(Date.now());
-    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
-
-    useEffect(() => {
-        const tick = setInterval(() => setNow(Date.now()), 1000);
-        return () => clearInterval(tick);
-    }, []);
-
-    const fetchData = useCallback(async () => {
-        try {
-            const res = await fetch('/api/response/status', { headers });
-            if (res.ok) {
-                setData(await res.json());
-                setLastUpdated(new Date());
-            }
-        } catch (e) {
-            console.error('Failed to fetch response status:', e);
-        }
-    }, [token]);
-
-    useEffect(() => {
-        fetchData();
-        const interval = setInterval(fetchData, 5000);
-        return () => clearInterval(interval);
-    }, [fetchData]);
-
-    const handleRollback = async (actionId) => {
-        setLoadingRollback(actionId);
-        setRollbackTarget(null);
-        try {
-            await fetch(`/api/response/rollback/${encodeURIComponent(actionId)}`, {
-                method: 'POST', headers
-            });
-            await fetchData();
-        } catch (e) {
-            console.error('Rollback failed:', e);
-        } finally {
-            setLoadingRollback(null);
-        }
-    };
-
-    const formatAge = (seconds) => {
-        if (!seconds) return '0s';
-        const m = Math.floor(seconds / 60);
-        const s = Math.floor(seconds % 60);
-        return m > 0 ? `${m}m ${s}s` : `${s}s`;
-    };
-
-    const formatExpiry = (entry) => {
-        if (!entry.expires_at) return 'Permanent';
-        const remaining = Math.max(0, Math.floor(entry.expires_at - Date.now() / 1000));
-        if (remaining <= 0) return 'Expired';
-        const m = Math.floor(remaining / 60);
-        const s = remaining % 60;
-        return `${m}m ${s}s left`;
-    };
-
-    const confidenceColor = (c) => {
-        if (c > 0.8) return 'bg-red-500';
-        if (c > 0.5) return 'bg-yellow-500';
-        return 'bg-orange-500';
-    };
-
-    if (!data) {
-        return (
-            <div className="bg-[#161b22] p-8 rounded-xl border border-gray-800 text-center">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#00ff7f] mx-auto mb-3"></div>
-                <p className="text-gray-500">Loading response agent data...</p>
-            </div>
-        );
-    }
-
-    const statCards = [
-        { label: 'Hard Blocks', key: 'hard_blocks', color: 'text-red-400', icon: '🔴' },
-        { label: 'Temp Blocks', key: 'temp_blocks', color: 'text-purple-400', icon: '⏱' },
-        { label: 'Rate Limits', key: 'rate_limits', color: 'text-yellow-400', icon: '🟡' },
-        { label: 'Quarantines', key: 'quarantines', color: 'text-orange-400', icon: '🟠' },
-        { label: 'Self-Healed', key: 'self_healed', color: 'text-green-400', icon: '💚' },
-        { label: 'Rollbacks', key: 'rollbacks', color: 'text-blue-400', icon: '🔵' },
-    ];
-
-    const tabs = [
-        { id: 'active', label: 'Active Rules', count: data.blocked_ips?.length || 0 },
-        { id: 'history', label: 'Action History', count: data.action_history?.length || 0 },
-        { id: 'healing', label: 'Self-Healing Log', count: data.self_healing_log?.length || 0 },
-    ];
-
-    const healingLog = data.self_healing_log || [];
-    const visibleHealing = showAllHealing ? healingLog : healingLog.slice(0, 3);
-    const hiddenCount = healingLog.length - 3;
-
-    return (
-        <div className="space-y-6">
-            {/* Rollback Confirmation Modal */}
-            {rollbackTarget && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-                    <div className="bg-[#161b22] border border-gray-700 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
-                        <h3 className="text-lg font-semibold text-white mb-3">Confirm Rollback</h3>
-                        <p className="text-gray-400 text-sm mb-4">
-                            Are you sure you want to rollback the rule for{' '}
-                            <span className="font-mono bg-gray-800 text-white px-2 py-0.5 rounded">{rollbackTarget.ip}</span>?
-                        </p>
-                        <div className="flex justify-end gap-3">
-                            <button
-                                onClick={() => setRollbackTarget(null)}
-                                className="px-4 py-2 text-sm bg-gray-800 border border-gray-700 text-gray-300 rounded-lg hover:bg-gray-700 transition"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={() => handleRollback(rollbackTarget.action_id)}
-                                disabled={loadingRollback === rollbackTarget.action_id}
-                                className="px-4 py-2 text-sm bg-red-600/20 border border-red-500/30 text-red-400 rounded-lg hover:bg-red-600/40 transition disabled:opacity-50"
-                            >
-                                {loadingRollback === rollbackTarget.action_id ? '...' : 'Rollback'}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Header */}
-            <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
-                <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                        <h3 className="text-lg font-semibold text-white">🛡️ Response Agent</h3>
-                        <span className="flex items-center gap-1.5">
-                            <span className="relative flex h-2.5 w-2.5">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
-                            </span>
-                        </span>
-                        {lastUpdated && (
-                            <span className="text-xs text-gray-500">
-                                Updated {lastUpdated.toLocaleTimeString()}
-                            </span>
-                        )}
-                    </div>
-                    {data.dry_run ? (
-                        <span className="px-3 py-1 rounded-full text-xs font-bold bg-yellow-600/30 text-yellow-400 border border-yellow-500/30">DRY RUN</span>
-                    ) : (
-                        <span className="px-3 py-1 rounded-full text-xs font-bold bg-red-600/30 text-red-400 border border-red-500/30 animate-pulse">LIVE</span>
-                    )}
-                </div>
-
-                {/* 6 Stat Cards */}
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-                    {statCards.map(({ label, key, color, icon }) => (
-                        <div key={key} className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
-                            <p className="text-xs text-gray-500 uppercase flex items-center gap-1">
-                                <span>{icon}</span> {label}
-                            </p>
-                            <p className={`text-xl font-bold font-mono ${color}`}>{data.stats?.[key] || 0}</p>
-                        </div>
-                    ))}
-                </div>
-            </div>
-
-            {/* Tab Switcher */}
-            <div className="flex gap-2">
+            {/* TAB BAR */}
+            <div className="flex gap-2 mb-6 border-b border-gray-800 pb-2">
                 {tabs.map(tab => (
                     <button
                         key={tab.id}
                         onClick={() => setActiveTab(tab.id)}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 ${
+                        className={`flex items-center gap-2 px-4 py-2 rounded-t-lg text-sm font-medium transition ${
                             activeTab === tab.id
-                                ? 'bg-[#00ff7f]/20 text-[#00ff7f] border border-[#00ff7f]/30'
-                                : 'bg-[#161b22] text-gray-400 border border-gray-800 hover:text-white'
+                                ? 'bg-[#00ff7f]/10 text-[#00ff7f] border-b-2 border-[#00ff7f]'
+                                : 'text-gray-400 hover:text-white hover:bg-[#161b22]'
                         }`}
                     >
+                        <tab.icon className="w-4 h-4" />
                         {tab.label}
-                        <span className={`px-1.5 py-0.5 rounded-full text-xs font-mono ${
-                            activeTab === tab.id ? 'bg-[#00ff7f]/30 text-[#00ff7f]' : 'bg-gray-800 text-gray-500'
-                        }`}>
-                            {tab.count}
-                        </span>
                     </button>
                 ))}
             </div>
 
-            {/* Active Rules Tab */}
-            {activeTab === 'active' && (
-                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
-                    <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
-                        Active Enforcement Rules ({data.total_blocked || 0})
-                    </h3>
-                    {(!data.blocked_ips || data.blocked_ips.length === 0) ? (
-                        <div className="text-center py-10">
-                            <span className="text-4xl">✅</span>
-                            <p className="text-gray-500 text-sm mt-3">No active enforcement rules</p>
-                        </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="min-w-full divide-y divide-gray-800">
-                                <thead>
-                                    <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
-                                        <th className="px-3 py-2">IP Address</th>
-                                        <th className="px-3 py-2">Rule Type</th>
-                                        <th className="px-3 py-2">Reason</th>
-                                        <th className="px-3 py-2">Confidence</th>
-                                        <th className="px-3 py-2">Active For</th>
-                                        <th className="px-3 py-2">Expiry</th>
-                                        <th className="px-3 py-2">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-800/50">
-                                    {data.blocked_ips.map((entry, idx) => {
-                                        const conf = entry.confidence || 0;
-                                        return (
-                                            <tr key={idx} className="text-sm hover:bg-[#1f2937]/50">
-                                                <td className="px-3 py-2 font-mono text-gray-300">{entry.ip}</td>
-                                                <td className="px-3 py-2"><RuleTypeBadge type={entry.rule_type} /></td>
-                                                <td className="px-3 py-2 text-gray-400 max-w-[180px] truncate" title={entry.reason}>{entry.reason}</td>
-                                                <td className="px-3 py-2">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                                                            <div className={`h-full rounded-full ${confidenceColor(conf)}`} style={{ width: `${Math.min(conf * 100, 100)}%` }} />
-                                                        </div>
-                                                        <span className="text-gray-300 font-mono text-xs">{(conf * 100).toFixed(0)}%</span>
-                                                    </div>
-                                                </td>
-                                                <td className="px-3 py-2 text-gray-400 font-mono">{formatAge(entry.age_seconds)}</td>
-                                                <td className="px-3 py-2 text-gray-400 font-mono text-xs">{formatExpiry(entry)}</td>
-                                                <td className="px-3 py-2">
-                                                    <button
-                                                        onClick={() => setRollbackTarget(entry)}
-                                                        disabled={loadingRollback === entry.action_id}
-                                                        className="px-2 py-1 text-xs bg-red-600/20 border border-red-500/30 text-red-400 rounded hover:bg-red-600/40 transition disabled:opacity-50"
-                                                    >
-                                                        {loadingRollback === entry.action_id ? '...' : 'Rollback'}
-                                                    </button>
+            {/* TAB CONTENT */}
+
+            {/* LIVE FEED TAB */}
+            {activeTab === 'live' && (
+                <div className="space-y-4">
+                    {/* Filter bar */}
+                    <div className="flex gap-2 items-center">
+                        <span className="text-sm text-gray-400">Filter:</span>
+                        {['all', 'High', 'Medium', 'Low'].map(f => (
+                            <button key={f} onClick={() => setLiveSevFilter(f)}
+                                className={`px-3 py-1 text-xs rounded-lg transition ${
+                                    liveSevFilter === f
+                                        ? 'bg-[#00ff7f]/20 text-[#00ff7f] border border-[#00ff7f]/30'
+                                        : 'bg-[#161b22] text-gray-400 border border-gray-700 hover:text-white'
+                                }`}>
+                                {f === 'all' ? 'All' : f}
+                            </button>
+                        ))}
+                        <span className="ml-auto text-xs text-gray-500">{filteredDetections.length} detections</span>
+                    </div>
+
+                    {/* Two-panel layout */}
+                    <div className="flex gap-4">
+                        {/* LEFT — Detection List */}
+                        <div className="flex-1 bg-[#161b22] rounded-xl border border-gray-800 overflow-hidden">
+                            <div className="max-h-[65vh] overflow-y-auto">
+                                <table className="min-w-full divide-y divide-gray-800">
+                                    <thead className="sticky top-0 bg-[#161b22]">
+                                        <tr className="text-left text-gray-400 text-xs uppercase tracking-wider">
+                                            <th className="px-3 py-2.5">Time</th>
+                                            <th className="px-3 py-2.5">Source → Dest</th>
+                                            <th className="px-3 py-2.5">Protocol</th>
+                                            <th className="px-3 py-2.5">Severity</th>
+                                            <th className="px-3 py-2.5">Action</th>
+                                            <th className="px-3 py-2.5">Score</th>
+                                            <th className="px-3 py-2.5"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-800/50">
+                                        {filteredDetections.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={7} className="px-4 py-12 text-center text-gray-500 italic">
+                                                    {isRunning ? 'Waiting for detections...' : 'Start the agent to begin detecting threats'}
                                                 </td>
                                             </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
+                                        ) : filteredDetections.slice(0, 50).map((d, idx) => {
+                                            const actionClass = d.rl_action === 'block' ? 'bg-red-900/50 text-red-400' : 'bg-green-900/50 text-green-400';
+                                            const isSelected = selectedDetection === idx;
+                                            return (
+                                                <tr key={idx}
+                                                    onClick={() => setSelectedDetection(isSelected ? null : idx)}
+                                                    className={`text-sm cursor-pointer transition ${isSelected ? 'bg-[#00ff7f]/5' : 'hover:bg-[#1f2937]/50'}`}
+                                                >
+                                                    <td className="px-3 py-2 text-xs text-gray-400 whitespace-nowrap">{getRelativeTime(d.timestamp)}</td>
+                                                    <td className="px-3 py-2 font-mono text-xs text-white">
+                                                        {d.src_ip} <span className="text-gray-500">→</span> {d.dst_ip}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-xs text-gray-300">{d.protocol}:{d.dport}</td>
+                                                    <td className="px-3 py-2">
+                                                        <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${SEVERITY_COLORS[d.severity] || 'bg-gray-800 text-gray-400'}`}>
+                                                            {d.severity}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-3 py-2">
+                                                        <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${actionClass}`}>
+                                                            {(d.rl_action || '').toUpperCase()}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-3 py-2 font-mono text-xs text-gray-300">
+                                                        {(d.rf_confidence * 100).toFixed(0)}%
+                                                    </td>
+                                                    <td className="px-3 py-2">
+                                                        {onNavigateToXAI && (
+                                                            <button onClick={(e) => { e.stopPropagation(); onNavigateToXAI(); }}
+                                                                className="text-[#00ff7f] hover:text-white text-xs transition">
+                                                                Explain →
+                                                            </button>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
-                    )}
+
+                        {/* RIGHT — Summary Panel */}
+                        {selectedDetection !== null && filteredDetections[selectedDetection] && (
+                            <div className="w-80 bg-[#161b22] rounded-xl border border-gray-800 p-4 max-h-[65vh] overflow-y-auto">
+                                <h4 className="text-sm font-bold text-white mb-3">Detection Summary</h4>
+                                {(() => {
+                                    const d = filteredDetections[selectedDetection];
+                                    return (
+                                        <div className="space-y-3 text-xs">
+                                            <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
+                                                <span className="text-gray-500 uppercase">Timestamp</span>
+                                                <p className="text-white">{formatTimestamp(d.timestamp)}</p>
+                                            </div>
+                                            <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
+                                                <span className="text-gray-500 uppercase">Source</span>
+                                                <p className="text-white font-mono">{d.src_ip}:{d.sport}</p>
+                                            </div>
+                                            <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
+                                                <span className="text-gray-500 uppercase">Destination</span>
+                                                <p className="text-white font-mono">{d.dst_ip}:{d.dport}</p>
+                                            </div>
+                                            <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
+                                                <span className="text-gray-500 uppercase">RF Prediction</span>
+                                                <p className={`font-bold ${d.rf_prediction === 'attack' ? 'text-red-400' : 'text-green-400'}`}>
+                                                    {(d.rf_prediction || '').toUpperCase()} ({(d.rf_confidence * 100).toFixed(1)}%)
+                                                </p>
+                                            </div>
+                                            <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
+                                                <span className="text-gray-500 uppercase">RL Action</span>
+                                                <p className={`font-bold ${d.rl_action === 'block' ? 'text-red-400' : 'text-green-400'}`}>
+                                                    {(d.rl_action || '').toUpperCase()}
+                                                </p>
+                                            </div>
+                                            <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
+                                                <span className="text-gray-500 uppercase">Reason</span>
+                                                <p className="text-gray-300">{d.reason}</p>
+                                            </div>
+                                            <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
+                                                <span className="text-gray-500 uppercase">Exploration</span>
+                                                <p className={d.was_exploration ? 'text-yellow-400' : 'text-green-400'}>
+                                                    {d.was_exploration ? '🎲 Random (ε-greedy)' : '🧠 Exploitation'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+                        )}
+                    </div>
                 </div>
             )}
 
-            {/* Action History Tab */}
-            {activeTab === 'history' && (
-                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
-                    <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Action History</h3>
-                    {(!data.action_history || data.action_history.length === 0) ? (
-                        <p className="text-gray-500 text-sm text-center py-4">No actions recorded yet</p>
-                    ) : (
-                        <div className="relative pl-6">
-                            <div className="absolute left-2.5 top-0 bottom-0 w-px bg-gray-700"></div>
-                            {data.action_history.map((entry, idx) => (
-                                <div
-                                    key={idx}
-                                    className={`relative mb-4 ${entry.reversed ? 'opacity-50' : ''}`}
-                                >
-                                    <div className="absolute -left-3.5 top-1.5 w-3 h-3 rounded-full border-2 border-gray-700 bg-[#161b22]"></div>
-                                    <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="font-mono text-white text-sm bg-gray-800 px-2 py-0.5 rounded">{entry.ip}</span>
-                                            <RuleTypeBadge type={entry.rule_type} />
-                                            {entry.reversed && (
-                                                <span className="text-xs italic text-gray-500">reversed</span>
-                                            )}
-                                        </div>
-                                        <div className="mt-1 flex items-center gap-3 text-xs text-gray-500">
-                                            <span className="font-mono">{entry.timestamp ? new Date(entry.timestamp * 1000).toLocaleString() : ''}</span>
-                                            <span className="text-gray-400">{entry.reason}</span>
-                                            {entry.confidence != null && (
-                                                <span className="font-mono text-gray-400">{(entry.confidence * 100).toFixed(0)}%</span>
-                                            )}
-                                        </div>
-                                    </div>
+            {/* Q-TABLE TAB */}
+            {activeTab === 'qtable' && (
+                <div className="space-y-4">
+                    {/* RL Stats */}
+                    {rlStats && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                            {[
+                                { label: 'Epsilon', value: rlStats.epsilon?.toFixed(4), sub: 'Exploration rate' },
+                                { label: 'Total States', value: rlStats.total_states || qTable.length, sub: 'Unique states learned' },
+                                { label: 'Allow Dominant', value: rlStats.allow_dominant || 'N/A', sub: 'States preferring allow' },
+                                { label: 'Block Dominant', value: rlStats.block_dominant || 'N/A', sub: 'States preferring block' },
+                            ].map(s => (
+                                <div key={s.label} className="bg-[#161b22] p-4 rounded-xl border border-gray-800 text-center">
+                                    <p className="text-2xl font-bold text-white">{s.value}</p>
+                                    <p className="text-sm font-medium text-[#00ff7f]">{s.label}</p>
+                                    <p className="text-xs text-gray-500 mt-1">{s.sub}</p>
                                 </div>
                             ))}
                         </div>
                     )}
-                </div>
-            )}
 
-            {/* Self-Healing Log Tab */}
-            {activeTab === 'healing' && (
-                <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
-                    <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Self-Healing Log</h3>
-                    {healingLog.length === 0 ? (
-                        <p className="text-gray-500 text-sm text-center py-4">No auto-unblock events yet</p>
-                    ) : (
-                        <div className="space-y-3">
-                            {visibleHealing.map((entry, idx) => (
-                                <div key={idx} className="bg-[#0d1117] p-3 rounded-lg border border-gray-800 flex items-start gap-3">
-                                    <span className="text-green-400 text-lg mt-0.5">🔄</span>
-                                    <div className="flex-1">
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="font-mono text-white text-sm">{entry.ip}</span>
-                                            <RuleTypeBadge type={entry.original_rule_type || entry.rule_type} />
-                                        </div>
-                                        <div className="mt-1 flex items-center gap-3 text-xs text-gray-500">
-                                            <span className="font-mono">
-                                                {entry.reversed_at
-                                                    ? new Date(entry.reversed_at * 1000).toLocaleString()
-                                                    : entry.timestamp
-                                                        ? new Date(entry.timestamp * 1000).toLocaleString()
-                                                        : ''}
+                    {/* Search bar */}
+                    <div className="flex items-center bg-[#161b22] border border-gray-700 rounded-lg px-3 py-1">
+                        <SearchIcon className="w-4 h-4 text-gray-500" />
+                        <input
+                            type="text"
+                            value={qSearch}
+                            onChange={(e) => setQSearch(e.target.value)}
+                            placeholder="Search Q-table states..."
+                            className="flex-1 bg-transparent text-white text-sm py-2 px-2 focus:outline-none"
+                        />
+                    </div>
+
+                    {/* Q-Table cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto">
+                        {filteredQTable.length === 0 ? (
+                            <div className="col-span-2 text-center py-12">
+                                <BrainIcon className="w-10 h-10 text-gray-700 mx-auto mb-3" />
+                                <p className="text-gray-500">No Q-table entries yet. Start the agent to begin learning.</p>
+                            </div>
+                        ) : filteredQTable.map((entry, idx) => {
+                            const qAllow = entry.allow ?? entry.q_allow ?? 0;
+                            const qBlock = entry.block ?? entry.q_block ?? 0;
+                            const dominant = qBlock > qAllow ? 'BLOCK' : 'ALLOW';
+                            const dominantColor = dominant === 'BLOCK' ? 'text-red-400' : 'text-green-400';
+                            return (
+                                <div key={idx} className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                                    <p className="text-xs text-gray-500 mb-2">State:</p>
+                                    <p className="font-mono text-xs text-blue-300 mb-3 break-all">{entry.state || 'unknown'}</p>
+                                    <div className="space-y-2">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs text-gray-400 w-14">Allow</span>
+                                            <div className="flex-1 h-3 bg-gray-900 rounded overflow-hidden">
+                                                <div
+                                                    className={`h-3 rounded ${qAllow >= 0 ? 'bg-green-500' : 'bg-red-500'}`}
+                                                    style={{ width: `${Math.min(Math.abs(qAllow) * 100, 100)}%` }}
+                                                />
+                                            </div>
+                                            <span className={`text-xs font-mono w-12 text-right ${qAllow >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                {qAllow >= 0 ? '+' : ''}{qAllow.toFixed(2)}
                                             </span>
-                                            <span className="text-gray-400">{(entry.reason || '').replace(/_/g, ' ')}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs text-gray-400 w-14">Block</span>
+                                            <div className="flex-1 h-3 bg-gray-900 rounded overflow-hidden">
+                                                <div
+                                                    className={`h-3 rounded ${qBlock >= 0 ? 'bg-green-500' : 'bg-red-500'}`}
+                                                    style={{ width: `${Math.min(Math.abs(qBlock) * 100, 100)}%` }}
+                                                />
+                                            </div>
+                                            <span className={`text-xs font-mono w-12 text-right ${qBlock >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                {qBlock >= 0 ? '+' : ''}{qBlock.toFixed(2)}
+                                            </span>
                                         </div>
                                     </div>
+                                    <p className={`text-xs font-bold mt-2 ${dominantColor}`}>→ Dominant: {dominant}</p>
                                 </div>
-                            ))}
-                            {healingLog.length > 3 && (
-                                <button
-                                    onClick={() => setShowAllHealing(prev => !prev)}
-                                    className="w-full py-2 text-xs text-gray-400 hover:text-white border border-gray-800 rounded-lg hover:border-gray-600 transition"
-                                >
-                                    {showAllHealing ? 'Show less' : `Show ${hiddenCount} more`}
-                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
+            {/* RESPONSE AGENT TAB */}
+            {activeTab === 'response' && (
+                <div className="space-y-4">
+                    {/* Stats Row */}
+                    <div className="grid grid-cols-3 gap-4">
+                        <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800 text-center">
+                            <p className="text-2xl font-bold text-white">{activeRules.length}</p>
+                            <p className="text-sm text-gray-400">Active Rules</p>
+                        </div>
+                        <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800 text-center">
+                            <p className="text-2xl font-bold text-white">{healingLog.length}</p>
+                            <p className="text-sm text-gray-400">Auto-Healed</p>
+                        </div>
+                        <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800 text-center">
+                            <p className="text-2xl font-bold text-white">
+                                {responseConfig.block_ttl ? `${responseConfig.block_ttl}s` : 'N/A'}
+                            </p>
+                            <p className="text-sm text-gray-400">Block TTL</p>
+                        </div>
+                    </div>
+
+                    {/* Two Column Layout */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {/* LEFT — Active Rules Table */}
+                        <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                            <h3 className="text-sm font-semibold text-gray-400 uppercase mb-3">Active Rules</h3>
+                            {activeRules.length === 0 ? (
+                                <p className="text-gray-500 text-sm text-center py-8">No active response rules</p>
+                            ) : (
+                                <div className="overflow-x-auto">
+                                    <table className="min-w-full divide-y divide-gray-800">
+                                        <thead>
+                                            <tr className="text-left text-gray-400 text-xs uppercase">
+                                                <th className="px-3 py-2">IP</th>
+                                                <th className="px-3 py-2">Type</th>
+                                                <th className="px-3 py-2">Confidence</th>
+                                                <th className="px-3 py-2">Expires</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-800">
+                                            {activeRules.map((rule, idx) => (
+                                                <tr key={idx} className="text-sm hover:bg-[#0d1117]">
+                                                    <td className="px-3 py-2 font-mono text-white">{rule.ip}</td>
+                                                    <td className="px-3 py-2"><RuleTypeBadge type={rule.rule_type} /></td>
+                                                    <td className="px-3 py-2 text-gray-300">
+                                                        {rule.confidence != null ? `${(rule.confidence * 100).toFixed(0)}%` : 'N/A'}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-xs text-gray-400">
+                                                        {rule.expires_at ? formatTimestamp(rule.expires_at * 1000) : 'N/A'}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
                             )}
                         </div>
-                    )}
+
+                        {/* RIGHT — Config + Healing */}
+                        <div className="space-y-4">
+                            <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                                <h3 className="text-sm font-semibold text-gray-400 uppercase mb-3">Response Configuration</h3>
+                                <div className="space-y-2 text-sm">
+                                    {Object.entries(responseConfig).map(([key, val]) => (
+                                        <div key={key} className="flex justify-between">
+                                            <span className="text-gray-400">{key.replace(/_/g, ' ')}</span>
+                                            <span className="text-white font-mono">{typeof val === 'boolean' ? (val ? 'Enabled' : 'Disabled') : String(val)}</span>
+                                        </div>
+                                    ))}
+                                    {Object.keys(responseConfig).length === 0 && (
+                                        <p className="text-gray-500 text-xs italic">No config data available</p>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Self-Healing Log */}
+                            <div className="bg-[#161b22] p-4 rounded-xl border border-gray-800">
+                                <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Self-Healing Log</h3>
+                                {healingLog.length === 0 ? (
+                                    <p className="text-gray-500 text-sm text-center py-4">No auto-unblock events yet</p>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {visibleHealing.map((entry, idx) => (
+                                            <div key={idx} className="bg-[#0d1117] p-3 rounded-lg border border-gray-800 flex items-start gap-3">
+                                                <span className="text-green-400 text-lg mt-0.5">🔄</span>
+                                                <div className="flex-1">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="font-mono text-white text-sm">{entry.ip}</span>
+                                                        <RuleTypeBadge type={entry.original_rule_type || entry.rule_type} />
+                                                    </div>
+                                                    <p className="text-xs text-gray-500 mt-1">
+                                                        {entry.reversed_at ? formatTimestamp(entry.reversed_at * 1000) : entry.timestamp ? formatTimestamp(entry.timestamp * 1000) : ''}
+                                                        {entry.reason && <span className="ml-2 text-gray-400">{(entry.reason || '').replace(/_/g, ' ')}</span>}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {healingLog.length > 3 && (
+                                            <button
+                                                onClick={() => setShowAllHealing(prev => !prev)}
+                                                className="w-full py-2 text-xs text-gray-400 hover:text-white border border-gray-800 rounded-lg hover:border-gray-600 transition"
+                                            >
+                                                {showAllHealing ? 'Show less' : `Show ${healingLog.length - 3} more`}
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
                 </div>
+            )}
+
+            {/* VISUALIZATIONS TAB */}
+            {activeTab === 'viz' && (
+                <VisualizationsPanel token={token} />
             )}
         </div>
     );
 };
+
 
 const VisualizationsPanel = ({ token }) => {
     const [charts, setCharts] = useState([]);
@@ -910,8 +650,8 @@ const VisualizationsPanel = ({ token }) => {
             <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Live Detection Charts (matplotlib + seaborn)</h3>
                 <button onClick={() => { setLoading(true); fetchCharts(); }}
-                    className="px-3 py-1 text-xs bg-[#161b22] border border-gray-700 text-gray-400 rounded-lg hover:text-white hover:border-gray-500 transition">
-                    ↻ Refresh
+                    className="flex items-center gap-1 px-3 py-1 text-xs bg-[#161b22] border border-gray-700 text-gray-400 rounded-lg hover:text-white hover:border-gray-500 transition">
+                    <RefreshIcon className="w-3 h-3" /> Refresh
                 </button>
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
