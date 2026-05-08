@@ -1,0 +1,130 @@
+┌─────────────────────────────────────────────────────────────┐
+│                    React Frontend (Vite)                     │
+│  App.jsx | Dashboard | XAI | Federation | Logs | Detection  │
+└────────────────────┬────────────────────────────────────────┘
+                     │ HTTP (REST API + JWT Auth)
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Flask Backend (app.py) — Port 5000             │
+│  - Authentication (JWT)   - Traffic Simulation              │
+│  - Zero Trust Engine      - Hash-Chained Log Inserts        │
+│  - API Routes             - XAI Explain Endpoints           │
+└──┬───────────────────────────────────────────┬──────────────┘
+   │ spawns                                    │ uses
+   ▼                                           ▼
+┌────────────────────── ┐         ┌────────────────────────┐
+│  DetectionAgent       │         │  ResponseAgent         │
+│  (detection_agent.py) │         │  (response_agent.py)   │
+│  - Scapy packet sniff │         │  - iptables execution  │
+│  - EnsemblePredictor  │         │  - Hard block          │
+│  - DQN RL Agent       │         │  - Rate limit          │
+│  - LSTM Detector      │         │  - Quarantine          │
+│  - FLClient           │         │  - Self-healing loop   │
+└──────────┬─────────── ┘         └────────────────────────┘
+           │ sync (every 60s)
+           ▼
+┌──────  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+│  FL Server (fl_server.py) — Port 6000  │
+│  - FedAvg Aggregation                  │
+│  - Round history                       │
+└───── ─ ─ ── ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   ─┘
+           │ all write to
+           ▼
+┌──────────────────────────────────────────────────────────┐
+│  SQLite / Supabase Database                              │
+│  Tables: users, security_logs, detection_logs,           │
+│          network_stats (hash-chained)                    │
+└──────────────────────────────────────────────────────────┘
+
+
+
+`````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````
+````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````
+
+
+Network Interface
+    │
+    │ (Scapy sniffs every IP packet)
+    ▼
+extract_features(packet) → 11-feature vector
+    │
+    ├──→ EnsemblePredictor (RF + XGBoost)
+    │        → rf_prediction (0=normal, 1=attack)
+    │        → rf_confidence (0.0 - 1.0)
+    │
+    ├──→ Build RL state tuple (reason, ip_type, protocol, port_type)
+    │
+    ├──→ DQNAgent.select_action(state)
+    │        → "allow" or "block" (ε-greedy)
+    │
+    ├──→ Compute reward (+1 correct, -1 wrong)
+    │        → DQNAgent.update(state, action, reward)
+    │
+    ├──→ LSTMDetector.add_packet(features, label)
+    │        → predict_current() → (is_anomaly, score)
+    │        (if anomaly: escalate severity)
+    │
+    ├──→ ResponseAgent.execute(detection)
+    │        → hard_block / rate_limit / quarantine / temp_block
+    │        → iptables rule (or dry-run log)
+    │
+    ├──→ Save to DB (_insert_detection_log) — hash chained
+    │
+    └──→ FLClient (background thread, every 60s)
+             → extract weights → compute delta
+             → clip + noise (DP) → POST to FL Server
+             → GET global model → apply back
+            
+    
+```````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````
+```````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````
+
+
+┌──────────────────────────────────────────────────────────────────┐
+│                     DetectionAgent Output                        │
+│  {src_ip, rf_confidence, reason, is_malicious, rl_action}        │
+└─────────────────────────────┬────────────────────────────────────┘
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │  ResponseAgent    │
+                    │    .execute()     │
+                    └─────────┬─────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          │                   │                   │
+    ┌─────▼─────┐      ┌─────▼─────┐      ┌──────▼──────┐
+    │ rl_action │      │ malicious │      │   reason    │
+    │  = block  │ AND  │   = True  │ AND  │ = syn_scan  │
+    └─────┬─────┘      └─────┬─────┘      └──────┬──────┘
+          │                  │                  │
+          └──────────────────┴──────────────────┘
+                              │
+                    ┌─────────▼──────────┐
+                    │  Confidence-Based  │
+                    │  Escalation Ladder │
+                    └─────────┬──────────┘
+                              │
+         ┌────────────────────┼────────────────────┐
+         │                    │                    │
+    ┌────▼────┐          ┌────▼────┐         ┌─────▼─────┐
+    │ > 0.8   │          │ 0.5-0.8 │         │  0.3-0.5  │
+    │HARD     │          │ RATE    │         │ QUARANTINE│
+    │BLOCK    │          │ LIMIT   │         │           │
+    │(DROP)   │          │(10/min) │         │(MARK 99)  │
+    └─────────┘          └─────────┘         └───────────┘
+
+
+┌─────────────┐     Detection      ┌─────────────┐
+│   Threat    │ ─────────────────▶ │   Response  │
+│   Signal    │                    │   Action    │
+│ (confidence)│                    │ (iptables)  │
+└─────────────┘                    └──────┬──────┘
+                                          │
+┌─────────────┐     Feedback              │
+│ Self-Healing│ ◀────────────────────────┘
+│   (FP detect)│    (outcome monitoring)
+└─────────────┘
+
+`````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````
+`````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````

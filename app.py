@@ -18,6 +18,7 @@ import base64
 
 from detection_agent import DetectionAgent, TrafficClassifier
 from response_agent import ResponseAgent
+from threat_explainer import ThreatExplainer
 
 # Load environment variables
 load_dotenv()
@@ -296,6 +297,7 @@ def _init_sqlite():
             prev_hash TEXT,
             response_action TEXT DEFAULT 'none',
             response_rule_type TEXT DEFAULT 'none',
+            explanation TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -352,6 +354,9 @@ def _init_sqlite():
         cur.execute('ALTER TABLE "detection_logs" ADD COLUMN response_action TEXT DEFAULT \'none\'')
     if 'response_rule_type' not in det_cols:
         cur.execute('ALTER TABLE "detection_logs" ADD COLUMN response_rule_type TEXT DEFAULT \'none\'')
+    # ADD THIS: Add explanation column if missing
+    if 'explanation' not in det_cols:
+        cur.execute('ALTER TABLE "detection_logs" ADD COLUMN explanation TEXT')
     conn.commit()
     conn.close()
 
@@ -508,9 +513,38 @@ def _save_detection_to_db(detection):
             'epsilon': detection['epsilon'],
             'response_action': detection.get('response_action', 'none'),
             'response_rule_type': detection.get('response_rule_type', 'none'),
+            'explanation': detection.get('explanation', None),  # ADD THIS: LLM explanation
         })
+        
+        # ADD THIS: Trigger async threat explanation generation
+        _async_generate_explanation(detection)
     except Exception as e:
         print(f"[DetectionAgent DB] Error saving detection: {e}")
+
+
+# ADD THIS: Async function to generate and update threat explanation
+def _async_generate_explanation(detection):
+    """Generate threat explanation asynchronously and update the database."""
+    def _update_explanation():
+        try:
+            explanation = threat_explainer.explain(detection)
+            # Update the detection record with the explanation
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute(
+                'UPDATE detection_logs SET explanation = ? WHERE timestamp = ? AND src_ip = ? AND dst_ip = ?',
+                (explanation, detection['timestamp'], detection['src_ip'], detection['dst_ip'])
+            )
+            conn.commit()
+            conn.close()
+            print(f"[ThreatExplainer] Updated explanation for {detection['src_ip']} -> {detection['dst_ip']}")
+        except Exception as e:
+            print(f"[ThreatExplainer] Failed to generate/update explanation: {e}")
+    
+    # Run in background thread
+    import threading
+    thread = threading.Thread(target=_update_explanation, daemon=True)
+    thread.start()
 
 
 def _save_response_action_to_db(action_record):
@@ -535,6 +569,9 @@ def _save_response_action_to_db(action_record):
 
 response_agent = ResponseAgent(dry_run=True, db_callback=_save_response_action_to_db)
 response_agent.start_self_healing()
+
+# ADD THIS: Initialize ThreatExplainer for LLM threat explanations
+threat_explainer = ThreatExplainer()
 
 # Health-check FL server before enabling federated learning
 _fl_url = FL_SERVER_URL
@@ -1422,6 +1459,48 @@ def response_fp_tracker():
     return jsonify(result)
 
 
+# ADD THIS: LLM Threat Explainer endpoint
+@app.route('/api/explain', methods=['POST'])
+@jwt_required()
+def explain_threat():
+    """Generate LLM explanation for a detection event."""
+    data = request.get_json()
+    
+    # Validate required fields
+    required_fields = ['src_ip', 'dst_ip', 'protocol', 'reason', 'rf_confidence', 'rl_action', 'severity']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'Missing required field: {field}'}), 400
+    
+    try:
+        explanation = threat_explainer.explain(data)
+        return jsonify({'explanation': explanation})
+    except Exception as e:
+        print(f"[API] Error generating explanation: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ADD THIS: Evaluation metrics endpoint
+@app.route('/api/evaluation/latest', methods=['GET'])
+@jwt_required()
+def get_latest_evaluation():
+    """Return the latest evaluation report from evaluate.py."""
+    try:
+        import os
+        eval_report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'evaluation_report.json')
+        
+        if not os.path.exists(eval_report_path):
+            return jsonify({'error': 'No evaluation report found. Run evaluate.py first.'}), 404
+        
+        with open(eval_report_path, 'r') as f:
+            report = json.load(f)
+        
+        return jsonify(report)
+    except Exception as e:
+        print(f"[API] Error loading evaluation report: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 # =====================================================================
 # VISUALIZATION ENDPOINT (matplotlib + seaborn)
 # =====================================================================
@@ -1441,30 +1520,45 @@ def _fig_to_base64(fig):
 @jwt_required()
 def agent_visualizations():
     """Generate matplotlib/seaborn visualization charts from live detection data."""
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    import seaborn as sns
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except ImportError as e:
+        logger.error(f"Visualization import failed: {e}")
+        return jsonify({"error": f"Missing dependency: {e}", "charts": []}), 500
 
     # Dark theme
-    plt.rcParams.update({
-        'figure.facecolor': '#0d1117',
-        'axes.facecolor': '#161b22',
-        'axes.edgecolor': '#30363d',
-        'axes.labelcolor': '#c9d1d9',
-        'text.color': '#c9d1d9',
-        'xtick.color': '#8b949e',
-        'ytick.color': '#8b949e',
-        'grid.color': '#21262d',
-        'legend.facecolor': '#161b22',
-        'legend.edgecolor': '#30363d',
-    })
+    try:
+        plt.rcParams.update({
+            'figure.facecolor': '#0d1117',
+            'axes.facecolor': '#161b22',
+            'axes.edgecolor': '#30363d',
+            'axes.labelcolor': '#c9d1d9',
+            'text.color': '#c9d1d9',
+            'xtick.color': '#8b949e',
+            'ytick.color': '#8b949e',
+            'grid.color': '#21262d',
+            'legend.facecolor': '#161b22',
+            'legend.edgecolor': '#30363d',
+        })
+    except Exception as e:
+        logger.warning(f"Could not set plot style: {e}")
 
-    with detection_agent._lock:
-        dets = list(detection_agent.detections)
+    try:
+        with detection_agent._lock:
+            dets = list(detection_agent.detections)
+    except Exception as e:
+        logger.error(f"Failed to fetch detections: {e}")
+        return jsonify({"error": f"Failed to fetch detections: {str(e)}", "charts": []}), 500
 
     if not dets:
-        return jsonify({"charts": [], "message": "No detections yet"})
+        logger.info("No detections available for visualization")
+        return jsonify({"charts": [], "message": "No detections yet - start the detection agent first"})
 
     charts = []
 
@@ -1485,8 +1579,9 @@ def agent_visualizations():
         ax.set_xlim(0, 1)
         charts.append({"title": "Confidence Distribution", "image": _fig_to_base64(fig)})
         plt.close(fig)
-    except Exception:
-        pass
+        logger.info("Generated Confidence Distribution chart")
+    except Exception as e:
+        logger.warning(f"Confidence Distribution chart failed: {e}")
 
     # --- 2. Attack Timeline ---
     try:
@@ -1508,8 +1603,9 @@ def agent_visualizations():
             ax.set_ylim(0, 100)
             charts.append({"title": "Attack Timeline", "image": _fig_to_base64(fig)})
             plt.close(fig)
-    except Exception:
-        pass
+            logger.info("Generated Attack Timeline chart")
+    except Exception as e:
+        logger.warning(f"Attack Timeline chart failed: {e}")
 
     # --- 3. Protocol Breakdown (pie) ---
     try:
@@ -1530,8 +1626,9 @@ def agent_visualizations():
         ax.set_title('Protocol Distribution')
         charts.append({"title": "Protocol Distribution", "image": _fig_to_base64(fig)})
         plt.close(fig)
-    except Exception:
-        pass
+        logger.info("Generated Protocol Distribution chart")
+    except Exception as e:
+        logger.warning(f"Protocol Distribution chart failed: {e}")
 
     # --- 4. Response Action Distribution (bar) ---
     try:
@@ -1554,8 +1651,9 @@ def agent_visualizations():
         plt.xticks(rotation=30, ha='right', fontsize=8)
         charts.append({"title": "Response Actions", "image": _fig_to_base64(fig)})
         plt.close(fig)
-    except Exception:
-        pass
+        logger.info("Generated Response Actions chart")
+    except Exception as e:
+        logger.warning(f"Response Actions chart failed: {e}")
 
     # --- 5. RL Reward Over Time ---
     try:
@@ -1576,8 +1674,9 @@ def agent_visualizations():
             ax.legend()
             charts.append({"title": "RL Reward Trend", "image": _fig_to_base64(fig)})
             plt.close(fig)
-    except Exception:
-        pass
+            logger.info("Generated RL Reward Trend chart")
+    except Exception as e:
+        logger.warning(f"RL Reward Trend chart failed: {e}")
 
     # --- 6. Top Source IPs Heatmap ---
     try:
@@ -1594,8 +1693,9 @@ def agent_visualizations():
             ax.set_title('Top Attacker IPs')
             charts.append({"title": "Top Attacker IPs", "image": _fig_to_base64(fig)})
             plt.close(fig)
-    except Exception:
-        pass
+            logger.info("Generated Top Attacker IPs chart")
+    except Exception as e:
+        logger.warning(f"Top Attacker IPs chart failed: {e}")
 
     return jsonify({"charts": charts})
 

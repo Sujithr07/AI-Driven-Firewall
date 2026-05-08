@@ -21,6 +21,7 @@ import os
 import pickle
 import collections
 import uuid
+import socket
 import numpy as np
 from datetime import datetime
 
@@ -94,11 +95,95 @@ def _is_private(ip_str):
     return False
 
 
+def _get_local_ips():
+    """Get all local IP addresses of the machine across all interfaces."""
+    local_ips = set()
+    try:
+        # Method 1: Get hostname IPs
+        hostname = socket.gethostname()
+        try:
+            host_ips = socket.getaddrinfo(hostname, None, socket.AF_INET)
+            for ip_info in host_ips:
+                ip = ip_info[4][0]
+                if ip and not ip.startswith('127.'):
+                    local_ips.add(ip)
+        except Exception:
+            pass
+        
+        # Method 2: Get default route IP
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.5)
+            s.connect(('8.8.8.8', 80))
+            default_ip = s.getsockname()[0]
+            if default_ip:
+                local_ips.add(default_ip)
+            s.close()
+        except Exception:
+            pass
+        
+        # Method 3: Enumerate all network interfaces (Windows/Linux/Mac compatible)
+        try:
+            import subprocess
+            import re
+            
+            if os.name == 'nt':  # Windows
+                # Use ipconfig to get all interface IPs
+                result = subprocess.run(['ipconfig'], capture_output=True, text=True, timeout=5)
+                output = result.stdout
+                # Extract IPv4 addresses from ipconfig output
+                ipv4_pattern = r'IPv4 Address[^:]*:\s*(\d+\.\d+\.\d+\.\d+)'
+                matches = re.findall(ipv4_pattern, output)
+                for ip in matches:
+                    if not ip.startswith('127.'):
+                        local_ips.add(ip)
+            else:  # Linux/Mac
+                # Use ip addr or ifconfig
+                try:
+                    result = subprocess.run(['ip', 'addr'], capture_output=True, text=True, timeout=3)
+                    output = result.stdout
+                except:
+                    try:
+                        result = subprocess.run(['ifconfig'], capture_output=True, text=True, timeout=3)
+                        output = result.stdout
+                    except:
+                        output = ''
+                
+                # Extract IP addresses
+                ip_pattern = r'inet\s+(\d+\.\d+\.\d+\.\d+)'
+                matches = re.findall(ip_pattern, output)
+                for ip in matches:
+                    if not ip.startswith('127.'):
+                        local_ips.add(ip)
+        except Exception:
+            pass
+            
+        # Method 4: Try to get all interface addresses using netifaces if available
+        try:
+            import netifaces
+            for interface in netifaces.interfaces():
+                addrs = netifaces.ifaddresses(interface)
+                if netifaces.AF_INET in addrs:
+                    for addr_info in addrs[netifaces.AF_INET]:
+                        ip = addr_info.get('addr')
+                        if ip and not ip.startswith('127.'):
+                            local_ips.add(ip)
+        except ImportError:
+            pass  # netifaces not installed
+        except Exception:
+            pass
+            
+    except Exception:
+        pass
+    
+    return list(local_ips)
+
+
 # ---------------------------------------------------------------------------
 # Feature extraction from a Scapy packet
 # ---------------------------------------------------------------------------
 
-def extract_features(packet):
+ def extract_features(packet):
     """
     Extract numeric + categorical features from a raw Scapy packet.
     Returns (feature_dict, numeric_vector) or None if packet is not IP.
@@ -784,6 +869,7 @@ class DetectionAgent:
         self._running = False
         self._thread = None
         self._lock = threading.Lock()
+        self._local_ips = []  # Local machine IPs for traffic direction identification
 
         # Recent detections buffer (thread-safe ring buffer)
         self.max_detections = 200
@@ -815,6 +901,11 @@ class DetectionAgent:
 
         self._running = True
         self.stats["start_time"] = time.time()
+        
+        # Capture local IPs for traffic direction identification (live capture only)
+        if not use_simulation and SCAPY_AVAILABLE:
+            self._local_ips = _get_local_ips()
+            print(f"[DetectionAgent] Local IPs detected: {self._local_ips}")
 
         if use_simulation or not SCAPY_AVAILABLE:
             self._thread = threading.Thread(target=self._simulation_loop, daemon=True)
@@ -863,6 +954,7 @@ class DetectionAgent:
             "packets_allowed": self.stats["packets_allowed"],
             "packets_blocked": self.stats["packets_blocked"],
             "rl_stats": self.rl_agent.get_stats(),
+            "local_ips": self._local_ips,  # Show local IPs for reference
             "scapy_available": SCAPY_AVAILABLE,
             "sklearn_available": SKLEARN_AVAILABLE,
             "xgboost_available": XGBOOST_AVAILABLE,
@@ -992,10 +1084,17 @@ class DetectionAgent:
         if lstm_anomaly and severity == "Low":
             severity = "Medium"
 
+        # Determine if IPs are local to this machine
+        src_is_local = features["src_ip"] in self._local_ips
+        dst_is_local = features["dst_ip"] in self._local_ips
+        
         detection = {
             "timestamp": time.time() * 1000,
             "src_ip": features["src_ip"],
             "dst_ip": features["dst_ip"],
+            "src_is_local": src_is_local,
+            "dst_is_local": dst_is_local,
+            "traffic_direction": "outbound" if src_is_local else ("inbound" if dst_is_local else "external"),
             "protocol": features["protocol"],
             "sport": features["sport"],
             "dport": features["dport"],
