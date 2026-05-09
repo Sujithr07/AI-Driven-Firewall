@@ -348,6 +348,10 @@ const StatusCard = ({ label, value, color }) => (
 );
 
 const LiveDetectionsPanel = ({ detections }) => {
+    const [explanations, setExplanations] = useState({});
+    const [expandedRows, setExpandedRows] = useState(new Set());
+    const [loadingExplanations, setLoadingExplanations] = useState(new Set());
+
     if (!detections || detections.length === 0) {
         return (
             <div className="bg-[#161b22] p-8 rounded-xl border border-gray-800 text-center">
@@ -359,6 +363,61 @@ const LiveDetectionsPanel = ({ detections }) => {
 
     // Show newest first
     const sorted = [...detections].reverse();
+
+    const handleExplain = async (detection) => {
+        const key = detection.id || detection.timestamp;
+        
+        // If already loaded, just toggle visibility
+        if (explanations[key]) {
+            setExpandedRows(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(key)) {
+                    newSet.delete(key);
+                } else {
+                    newSet.add(key);
+                }
+                return newSet;
+            });
+            return;
+        }
+
+        // Show loading and fetch explanation
+        setLoadingExplanations(prev => new Set(prev).add(key));
+        setExpandedRows(prev => new Set(prev).add(key));
+
+        try {
+            const res = await fetch('/api/explain-threat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    src_ip: detection.src_ip,
+                    dst_ip: detection.dst_ip,
+                    protocol: detection.protocol,
+                    sport: detection.sport,
+                    dport: detection.dport,
+                    reason: detection.reason,
+                    rf_confidence: detection.rf_confidence,
+                    action: detection.rl_action,
+                    severity: detection.severity,
+                    is_malicious: detection.is_malicious,
+                }),
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                setExplanations(prev => ({ ...prev, [key]: data.explanation }));
+            }
+        } catch (e) {
+            console.error('Failed to fetch explanation:', e);
+            setExplanations(prev => ({ ...prev, [key]: 'Failed to load explanation.' }));
+        } finally {
+            setLoadingExplanations(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(key);
+                return newSet;
+            });
+        }
+    };
 
     return (
         <div className="bg-[#161b22] rounded-xl border border-gray-800 overflow-hidden">
@@ -386,87 +445,120 @@ const LiveDetectionsPanel = ({ detections }) => {
                             <th className="px-3 py-3">Reward</th>
                             <th className="px-3 py-3">Explore?</th>
                             <th className="px-3 py-3">Reason</th>
+                            <th className="px-3 py-3">Explain</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-800/50">
-                        {sorted.map((d, idx) => (
-                            <tr key={idx} className={`text-xs hover:bg-[#1f2937]/50 ${d.is_malicious ? 'bg-red-950/20' : ''} ${d.response_action === 'hard_block' ? 'border-l-2 border-red-500 bg-red-950/20' : ''} ${d.response_action === 'rate_limit' ? 'border-l-2 border-yellow-500 bg-yellow-950/10' : ''} ${d.response_action === 'quarantine' ? 'border-l-2 border-orange-500 bg-orange-950/10' : ''}`}>
-                                <td className="px-3 py-2 text-gray-300 font-mono whitespace-nowrap">
-                                    {new Date(d.timestamp).toLocaleTimeString()}
-                                </td>
-                                <td className="px-3 py-2 font-mono">
-                                    <span className={d.src_is_local ? 'text-blue-300' : 'text-green-300'} title={d.src_is_local ? 'Your IP (outbound traffic)' : 'External IP (inbound traffic)'}>
-                                        {d.src_ip}
-                                    </span>
-                                    {d.src_is_local && <span className="ml-1 text-[10px] text-blue-400">(YOU)</span>}
-                                </td>
-                                <td className="px-3 py-2 font-mono">
-                                    <span className={d.dst_is_local ? 'text-blue-300' : 'text-gray-300'} title={d.dst_is_local ? 'Your IP (inbound traffic)' : 'External IP'}>
-                                        {d.dst_ip}
-                                    </span>
-                                    {d.dst_is_local && <span className="ml-1 text-[10px] text-blue-400">(YOU)</span>}
-                                </td>
-                                <td className="px-3 py-2">
-                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                        d.traffic_direction === 'outbound' ? 'bg-blue-900/30 text-blue-300' : 
-                                        d.traffic_direction === 'inbound' ? 'bg-green-900/30 text-green-300' : 
-                                        'bg-gray-700/30 text-gray-400'
-                                    }`}>
-                                        {d.traffic_direction === 'outbound' ? '→ OUT' : d.traffic_direction === 'inbound' ? '← IN' : '↔ EXT'}
-                                    </span>
-                                </td>
-                                <td className="px-3 py-2">
-                                    <span className="px-2 py-0.5 rounded bg-blue-900/30 text-blue-300">{d.protocol}</span>
-                                </td>
-                                <td className="px-3 py-2 text-gray-300 font-mono">{d.dport}</td>
-                                <td className="px-3 py-2 text-gray-400">{d.size}B</td>
-                                <td className="px-3 py-2">
-                                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-                                        d.rf_prediction === 'attack' ? 'bg-red-900/40 text-red-300' : 'bg-green-900/40 text-green-300'
-                                    }`}>
-                                        {d.rf_prediction}
-                                    </span>
-                                </td>
-                                <td className="px-3 py-2 text-gray-300 font-mono">{(d.rf_confidence * 100).toFixed(0)}%</td>
-                                <td className="px-3 py-2">
-                                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-                                        d.rl_action === 'block' ? 'bg-red-600/30 text-red-400' : 'bg-green-600/30 text-green-400'
-                                    }`}>
-                                        {d.rl_action.toUpperCase()}
-                                    </span>
-                                </td>
-                                <td className="px-3 py-2">
-                                    {d.response_action === 'hard_block' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-red-600/30 text-red-400">🔴 HARD BLOCK</span>
-                                    ) : d.response_action === 'rate_limit' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-yellow-600/30 text-yellow-400">🟡 RATE LIMIT</span>
-                                    ) : d.response_action === 'quarantine' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-orange-600/30 text-orange-400">🟠 QUARANTINE</span>
-                                    ) : d.response_action === 'temp_block' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-purple-600/30 text-purple-400">⏱ TEMP BLOCK</span>
-                                    ) : d.response_action === 'already_blocked' ? (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-gray-600/30 text-gray-400">🔒 REPEAT</span>
-                                    ) : (
-                                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-green-600/30 text-green-400">✅ ALLOWED</span>
+                        {sorted.map((d, idx) => {
+                            const key = d.id || d.timestamp;
+                            return (
+                                <React.Fragment key={idx}>
+                                    <tr className={`text-xs hover:bg-[#1f2937]/50 ${d.is_malicious ? 'bg-red-950/20' : ''} ${d.response_action === 'hard_block' ? 'border-l-2 border-red-500 bg-red-950/20' : ''} ${d.response_action === 'rate_limit' ? 'border-l-2 border-yellow-500 bg-yellow-950/10' : ''} ${d.response_action === 'quarantine' ? 'border-l-2 border-orange-500 bg-orange-950/10' : ''}`}>
+                                        <td className="px-3 py-2 text-gray-300 font-mono whitespace-nowrap">
+                                            {new Date(d.timestamp).toLocaleTimeString()}
+                                        </td>
+                                        <td className="px-3 py-2 font-mono">
+                                            <span className={d.src_is_local ? 'text-blue-300' : 'text-green-300'} title={d.src_is_local ? 'Your IP (outbound traffic)' : 'External IP (inbound traffic)'}>
+                                                {d.src_ip}
+                                            </span>
+                                            {d.src_is_local && <span className="ml-1 text-[10px] text-blue-400">(YOU)</span>}
+                                        </td>
+                                        <td className="px-3 py-2 font-mono">
+                                            <span className={d.dst_is_local ? 'text-blue-300' : 'text-gray-300'} title={d.dst_is_local ? 'Your IP (inbound traffic)' : 'External IP'}>
+                                                {d.dst_ip}
+                                            </span>
+                                            {d.dst_is_local && <span className="ml-1 text-[10px] text-blue-400">(YOU)</span>}
+                                        </td>
+                                        <td className="px-3 py-2">
+                                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                                d.traffic_direction === 'outbound' ? 'bg-blue-900/30 text-blue-300' : 
+                                                d.traffic_direction === 'inbound' ? 'bg-green-900/30 text-green-300' : 
+                                                'bg-gray-700/30 text-gray-400'
+                                            }`}>
+                                                {d.traffic_direction === 'outbound' ? '→ OUT' : d.traffic_direction === 'inbound' ? '← IN' : '↔ EXT'}
+                                            </span>
+                                        </td>
+                                        <td className="px-3 py-2">
+                                            <span className="px-2 py-0.5 rounded bg-blue-900/30 text-blue-300">{d.protocol}</span>
+                                        </td>
+                                        <td className="px-3 py-2 text-gray-300 font-mono">{d.dport}</td>
+                                        <td className="px-3 py-2 text-gray-400">{d.size}B</td>
+                                        <td className="px-3 py-2">
+                                            <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                                                d.rf_prediction === 'attack' ? 'bg-red-900/40 text-red-300' : 'bg-green-900/40 text-green-300'
+                                            }`}>
+                                                {d.rf_prediction}
+                                            </span>
+                                        </td>
+                                        <td className="px-3 py-2 text-gray-300 font-mono">{(d.rf_confidence * 100).toFixed(0)}%</td>
+                                        <td className="px-3 py-2">
+                                            <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                                                d.rl_action === 'block' ? 'bg-red-600/30 text-red-400' : 'bg-green-600/30 text-green-400'
+                                            }`}>
+                                                {d.rl_action.toUpperCase()}
+                                            </span>
+                                        </td>
+                                        <td className="px-3 py-2">
+                                            {d.response_action === 'hard_block' ? (
+                                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-red-600/30 text-red-400">🔴 HARD BLOCK</span>
+                                            ) : d.response_action === 'rate_limit' ? (
+                                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-yellow-600/30 text-yellow-400">🟡 RATE LIMIT</span>
+                                            ) : d.response_action === 'quarantine' ? (
+                                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-orange-600/30 text-orange-400">🟠 QUARANTINE</span>
+                                            ) : d.response_action === 'temp_block' ? (
+                                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-purple-600/30 text-purple-400">⏱ TEMP BLOCK</span>
+                                            ) : d.response_action === 'already_blocked' ? (
+                                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-gray-600/30 text-gray-400">🔒 REPEAT</span>
+                                            ) : (
+                                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-green-600/30 text-green-400">✅ ALLOWED</span>
+                                            )}
+                                        </td>
+                                        <td className="px-3 py-2 font-mono">
+                                            <span className={d.rl_reward > 0 ? 'text-[#00ff7f]' : 'text-red-400'}>
+                                                {d.rl_reward > 0 ? '+1' : '-1'}
+                                            </span>
+                                        </td>
+                                        <td className="px-3 py-2">
+                                            {d.was_exploration ? (
+                                                <span className="text-yellow-400">🎲</span>
+                                            ) : (
+                                                <span className="text-[#00ff7f]">🧠</span>
+                                            )}
+                                        </td>
+                                        <td className="px-3 py-2 text-gray-400 max-w-[150px] truncate" title={d.reason}>
+                                            {d.reason}
+                                        </td>
+                                        <td className="px-3 py-2">
+                                            <button
+                                                onClick={() => handleExplain(d)}
+                                                className="px-2 py-1 bg-blue-600/20 border border-blue-500/30 text-blue-400 rounded hover:bg-blue-600/40 transition text-xs"
+                                            >
+                                                Explain
+                                            </button>
+                                        </td>
+                                    </tr>
+                                    {expandedRows.has(key) && (
+                                        <tr>
+                                            <td colSpan="15" className="px-3 py-2">
+                                                <div className="bg-blue-900/10 border border-blue-500/20 rounded-lg p-3">
+                                                    {loadingExplanations.has(key) ? (
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-400"></div>
+                                                            <span className="text-gray-400 text-xs">Loading explanation...</span>
+                                                        </div>
+                                                    ) : (
+                                                        <div>
+                                                            <p className="text-xs text-blue-400/70 uppercase tracking-wider mb-1">AI explanation</p>
+                                                            <p className="text-gray-300 text-sm">{explanations[key] || 'No explanation available.'}</p>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </td>
+                                        </tr>
                                     )}
-                                </td>
-                                <td className="px-3 py-2 font-mono">
-                                    <span className={d.rl_reward > 0 ? 'text-[#00ff7f]' : 'text-red-400'}>
-                                        {d.rl_reward > 0 ? '+1' : '-1'}
-                                    </span>
-                                </td>
-                                <td className="px-3 py-2">
-                                    {d.was_exploration ? (
-                                        <span className="text-yellow-400">🎲</span>
-                                    ) : (
-                                        <span className="text-[#00ff7f]">🧠</span>
-                                    )}
-                                </td>
-                                <td className="px-3 py-2 text-gray-400 max-w-[150px] truncate" title={d.reason}>
-                                    {d.reason}
-                                </td>
-                            </tr>
-                        ))}
+                                </React.Fragment>
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
