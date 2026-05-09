@@ -18,6 +18,7 @@ import base64
 
 from detection_agent import DetectionAgent, TrafficClassifier
 from response_agent import ResponseAgent
+import threat_explainer
 
 # Load environment variables
 load_dotenv()
@@ -1775,6 +1776,48 @@ def xai_feature_stats():
     count = len(records)
     averages = {name: round(totals[name] / count, 4) for name in _XAI_FEATURE_NAMES}
     return jsonify({"averages": averages, "count": count})
+
+
+@app.route('/api/explain-threat', methods=['POST'])
+def explain_threat():
+    """Generate AI-powered explanation for a threat detection event."""
+    try:
+        data = request.get_json()
+        
+        # Extract event fields
+        event = {
+            'src_ip': data.get('src_ip', 'unknown'),
+            'dst_ip': data.get('dst_ip', 'unknown'),
+            'protocol': data.get('protocol', 'unknown'),
+            'sport': data.get('sport', 'unknown'),
+            'dport': data.get('dport', 'unknown'),
+            'reason': data.get('reason', 'unknown'),
+            'rf_confidence': data.get('rf_confidence', 'unknown'),
+            'action': data.get('action', 'unknown'),
+            'severity': data.get('severity', 'unknown'),
+            'is_malicious': data.get('is_malicious', 'unknown'),
+        }
+        
+        # Check if result is cached
+        cache_key = (event['src_ip'], event['reason'], event['action'])
+        is_cached = cache_key in threat_explainer._explanation_cache
+        
+        # Get explanation
+        explanation = threat_explainer.explain_threat(event)
+        
+        return jsonify({
+            'explanation': explanation,
+            'cached': is_cached
+        }), 200
+        
+    except Exception as e:
+        # Always return 200 with fallback message, never 500
+        print(f"Error in explain_threat endpoint: {e}")
+        fallback_msg = f"Unable to generate explanation. Threat: {data.get('reason', 'unknown')} from {data.get('src_ip', 'unknown')}."
+        return jsonify({
+            'explanation': fallback_msg,
+            'cached': False
+        }), 200
 
 
 if __name__ == '__main__':
