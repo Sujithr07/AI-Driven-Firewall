@@ -277,24 +277,25 @@ const SHAPPanel = ({ detection, featureStats }) => {
                     <div className="space-y-2">
                         {sorted.map(([feat, val]) => {
                             const isPositive = val >= 0;
+                            const barWidth = Math.min(Math.abs(val) / 0.35 * 100, 100);
                             return (
                                 <div key={feat} className="flex items-center gap-3 text-xs">
                                     <span className="text-gray-400 w-28 text-right flex-shrink-0">{FEATURE_LABELS[feat] || feat}</span>
                                     <div className="flex-1 h-4 bg-gray-900 rounded overflow-hidden relative">
                                         <div
                                             className={`h-full rounded ${isPositive ? 'bg-red-500' : 'bg-green-500'}`}
-                                            style={{ width: `${Math.abs(val) / 0.35 * 100}%` }}
+                                            style={{ width: `${barWidth}%` }}
                                         />
                                     </div>
                                     <span className={`font-mono w-14 text-right flex-shrink-0 ${isPositive ? 'text-red-400' : 'text-green-400'}`}>
-                                        {isPositive ? '+' : ''}{val.toFixed(3)}
+                                        {isPositive ? '+' : ''}{val.toFixed(2)}
                                     </span>
                                 </div>
                             );
                         })}
                     </div>
                 )}
-                <div className="mt-3 text-xs text-gray-500">
+                <div className="text-xs text-gray-500 mt-3">
                     <span className="inline-block w-3 h-3 bg-red-500 rounded mr-1 align-middle"></span> → ATTACK
                     <span className="inline-block w-3 h-3 bg-green-500 rounded ml-3 mr-1 align-middle"></span> → SAFE
                 </div>
@@ -452,106 +453,6 @@ const QTableInsightsPanel = ({ detection }) => {
     );
 };
 
-// ADD THIS: Evaluation Metrics Panel
-const EvaluationMetricsPanel = ({ evaluationMetrics }) => {
-    if (!evaluationMetrics) {
-        return (
-            <div className="bg-[#161b22] rounded-xl border border-gray-800 p-8 text-center">
-                <p className="text-gray-500">No evaluation report found. Run <code className="text-blue-400">python evaluate.py</code> to generate benchmark metrics.</p>
-            </div>
-        );
-    }
-
-    const ensembleMetrics = evaluationMetrics.ensemble_metrics || {};
-    const rlMetrics = evaluationMetrics.rl_metrics || {};
-
-    return (
-        <div className="space-y-4">
-            {/* Ensemble Metrics */}
-            <div className="bg-[#161b22] rounded-xl border border-gray-800 p-4">
-                <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">EnsemblePredictor (RF + XGBoost)</h4>
-                <div className="grid grid-cols-2 gap-4">
-                    <MetricCard label="F1 Score" value={ensembleMetrics.f1} format="percentage" />
-                    <MetricCard label="Precision" value={ensembleMetrics.precision} format="percentage" />
-                    <MetricCard label="Recall" value={ensembleMetrics.recall} format="percentage" />
-                    <MetricCard label="FPR" value={ensembleMetrics.fpr} format="percentage" />
-                    <MetricCard label="Accuracy" value={ensembleMetrics.accuracy} format="percentage" />
-                    <MetricCard label="Samples" value={evaluationMetrics.num_samples} format="number" />
-                </div>
-            </div>
-
-            {/* RL Agent Metrics */}
-            <div className="bg-[#161b22] rounded-xl border border-gray-800 p-4">
-                <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">DQNAgent (Reinforcement Learning)</h4>
-                <div className="grid grid-cols-2 gap-4">
-                    <MetricCard label="F1 Score" value={rlMetrics.f1} format="percentage" />
-                    <MetricCard label="Precision" value={rlMetrics.precision} format="percentage" />
-                    <MetricCard label="Recall" value={rlMetrics.recall} format="percentage" />
-                    <MetricCard label="FPR" value={rlMetrics.fpr} format="percentage" />
-                    <MetricCard label="Accuracy" value={rlMetrics.accuracy} format="percentage" />
-                </div>
-            </div>
-
-            {/* Confusion Matrix */}
-            <div className="bg-[#161b22] rounded-xl border border-gray-800 p-4">
-                <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Confusion Matrix (Ensemble)</h4>
-                {ensembleMetrics.confusion_matrix && (
-                    <div className="grid grid-cols-2 gap-2 text-center">
-                        <div className="bg-green-900/20 p-3 rounded border border-green-500/30">
-                            <p className="text-xs text-gray-400">True Negative</p>
-                            <p className="text-2xl font-bold text-green-400">{ensembleMetrics.tn}</p>
-                        </div>
-                        <div className="bg-red-900/20 p-3 rounded border border-red-500/30">
-                            <p className="text-xs text-gray-400">False Positive</p>
-                            <p className="text-2xl font-bold text-red-400">{ensembleMetrics.fp}</p>
-                        </div>
-                        <div className="bg-red-900/20 p-3 rounded border border-red-500/30">
-                            <p className="text-xs text-gray-400">False Negative</p>
-                            <p className="text-2xl font-bold text-red-400">{ensembleMetrics.fn}</p>
-                        </div>
-                        <div className="bg-green-900/20 p-3 rounded border border-green-500/30">
-                            <p className="text-xs text-gray-400">True Positive</p>
-                            <p className="text-2xl font-bold text-green-400">{ensembleMetrics.tp}</p>
-                        </div>
-                    </div>
-                )}
-            </div>
-
-            {/* Dataset Info */}
-            <div className="bg-[#161b22] rounded-xl border border-gray-800 p-4">
-                <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Dataset Information</h4>
-                <div className="text-xs text-gray-400 space-y-1">
-                    <p>Dataset: {evaluationMetrics.dataset_path || 'N/A'}</p>
-                    <p>Total Samples: {evaluationMetrics.num_samples || 0}</p>
-                    <p>Attack Samples: {evaluationMetrics.num_attacks || 0}</p>
-                    <p>Normal Samples: {evaluationMetrics.num_normal || 0}</p>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-const MetricCard = ({ label, value, format }) => {
-    if (value === undefined || value === null) {
-        return (
-            <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
-                <p className="text-xs text-gray-500">{label}</p>
-                <p className="text-lg font-bold text-gray-600">N/A</p>
-            </div>
-        );
-    }
-
-    const displayValue = format === 'percentage' ? (value * 100).toFixed(2) + '%' : value;
-    const color = format === 'percentage' && value >= 0.8 ? 'text-green-400' : format === 'percentage' && value >= 0.6 ? 'text-yellow-400' : format === 'percentage' ? 'text-red-400' : 'text-blue-400';
-
-    return (
-        <div className="bg-[#0d1117] p-3 rounded-lg border border-gray-800">
-            <p className="text-xs text-gray-500">{label}</p>
-            <p className={`text-lg font-bold ${color}`}>{displayValue}</p>
-        </div>
-    );
-};
-
 // --- Main Component ---
 
 const XAIDashboardView = ({ token }) => {
@@ -561,7 +462,6 @@ const XAIDashboardView = ({ token }) => {
     const [loading, setLoading] = useState(true);
     const [activeSection, setActiveSection] = useState('pipeline');
     const [userSelected, setUserSelected] = useState(false);
-    const [evaluationMetrics, setEvaluationMetrics] = useState(null);  // ADD THIS
 
     const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 
@@ -596,30 +496,16 @@ const XAIDashboardView = ({ token }) => {
         }
     }, [token]);
 
-    // ADD THIS: Fetch evaluation metrics
-    const fetchEvaluationMetrics = useCallback(async () => {
-        try {
-            const res = await fetch('/api/evaluation/latest', { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setEvaluationMetrics(data);
-            }
-        } catch (e) {
-            console.error('Failed to fetch evaluation metrics:', e);
-        }
-    }, [token]);
-
     useEffect(() => {
         const init = async () => {
             await fetchDetections();
             await fetchFeatureStats();
-            await fetchEvaluationMetrics();  // ADD THIS
             setLoading(false);
         };
         init();
         const interval = setInterval(fetchDetections, 10000);
         return () => clearInterval(interval);
-    }, [fetchDetections, fetchFeatureStats, fetchEvaluationMetrics]);  // ADD THIS
+    }, [fetchDetections, fetchFeatureStats]);
 
     if (loading) {
         return (
@@ -649,7 +535,6 @@ const XAIDashboardView = ({ token }) => {
                     { id: 'pipeline', label: '🔬 Pipeline Walkthrough' },
                     { id: 'shap', label: '📊 SHAP Feature Importance' },
                     { id: 'qtable', label: '🧠 Q-Table Insights' },
-                    { id: 'metrics', label: '📈 Evaluation Metrics' },
                 ].map(btn => (
                     <button
                         key={btn.id}
@@ -713,9 +598,7 @@ const XAIDashboardView = ({ token }) => {
 
                 {/* Right: Content area (2/3) */}
                 <div className="w-2/3">
-                    {activeSection === 'metrics' ? (
-                        <EvaluationMetricsPanel evaluationMetrics={evaluationMetrics} />
-                    ) : !selectedDetection ? (
+                    {!selectedDetection ? (
                         <div className="bg-[#161b22] rounded-xl border border-gray-800 p-8 text-center">
                             <p className="text-gray-500">Select a detection from the left panel to view its explanation</p>
                         </div>

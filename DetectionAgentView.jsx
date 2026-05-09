@@ -386,7 +386,6 @@ const LiveDetectionsPanel = ({ detections }) => {
                             <th className="px-3 py-3">Reward</th>
                             <th className="px-3 py-3">Explore?</th>
                             <th className="px-3 py-3">Reason</th>
-                        <th className="px-3 py-3">AI Summary</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-800/50">
@@ -466,13 +465,6 @@ const LiveDetectionsPanel = ({ detections }) => {
                                 <td className="px-3 py-2 text-gray-400 max-w-[150px] truncate" title={d.reason}>
                                     {d.reason}
                                 </td>
-                                {/* ADD THIS: Show explanation if available */}
-                                {d.explanation && (
-                                    <td className="px-3 py-2 text-gray-400 text-xs italic max-w-[250px]" title={d.explanation}>
-                                        <span className="text-gray-500 mr-1">AI:</span>
-                                        {d.explanation}
-                                    </td>
-                                )}
                             </tr>
                         ))}
                     </tbody>

@@ -18,7 +18,6 @@ import base64
 
 from detection_agent import DetectionAgent, TrafficClassifier
 from response_agent import ResponseAgent
-from threat_explainer import ThreatExplainer
 
 # Load environment variables
 load_dotenv()
@@ -297,7 +296,6 @@ def _init_sqlite():
             prev_hash TEXT,
             response_action TEXT DEFAULT 'none',
             response_rule_type TEXT DEFAULT 'none',
-            explanation TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -354,9 +352,6 @@ def _init_sqlite():
         cur.execute('ALTER TABLE "detection_logs" ADD COLUMN response_action TEXT DEFAULT \'none\'')
     if 'response_rule_type' not in det_cols:
         cur.execute('ALTER TABLE "detection_logs" ADD COLUMN response_rule_type TEXT DEFAULT \'none\'')
-    # ADD THIS: Add explanation column if missing
-    if 'explanation' not in det_cols:
-        cur.execute('ALTER TABLE "detection_logs" ADD COLUMN explanation TEXT')
     conn.commit()
     conn.close()
 
@@ -513,38 +508,9 @@ def _save_detection_to_db(detection):
             'epsilon': detection['epsilon'],
             'response_action': detection.get('response_action', 'none'),
             'response_rule_type': detection.get('response_rule_type', 'none'),
-            'explanation': detection.get('explanation', None),  # ADD THIS: LLM explanation
         })
-        
-        # ADD THIS: Trigger async threat explanation generation
-        _async_generate_explanation(detection)
     except Exception as e:
         print(f"[DetectionAgent DB] Error saving detection: {e}")
-
-
-# ADD THIS: Async function to generate and update threat explanation
-def _async_generate_explanation(detection):
-    """Generate threat explanation asynchronously and update the database."""
-    def _update_explanation():
-        try:
-            explanation = threat_explainer.explain(detection)
-            # Update the detection record with the explanation
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute(
-                'UPDATE detection_logs SET explanation = ? WHERE timestamp = ? AND src_ip = ? AND dst_ip = ?',
-                (explanation, detection['timestamp'], detection['src_ip'], detection['dst_ip'])
-            )
-            conn.commit()
-            conn.close()
-            print(f"[ThreatExplainer] Updated explanation for {detection['src_ip']} -> {detection['dst_ip']}")
-        except Exception as e:
-            print(f"[ThreatExplainer] Failed to generate/update explanation: {e}")
-    
-    # Run in background thread
-    import threading
-    thread = threading.Thread(target=_update_explanation, daemon=True)
-    thread.start()
 
 
 def _save_response_action_to_db(action_record):
@@ -569,9 +535,6 @@ def _save_response_action_to_db(action_record):
 
 response_agent = ResponseAgent(dry_run=True, db_callback=_save_response_action_to_db)
 response_agent.start_self_healing()
-
-# ADD THIS: Initialize ThreatExplainer for LLM threat explanations
-threat_explainer = ThreatExplainer()
 
 # Health-check FL server before enabling federated learning
 _fl_url = FL_SERVER_URL
@@ -1457,48 +1420,6 @@ def response_fp_tracker():
             'likely_false_positive': avg < 0.4 and len(readings) > 5,
         }
     return jsonify(result)
-
-
-# ADD THIS: LLM Threat Explainer endpoint
-@app.route('/api/explain', methods=['POST'])
-@jwt_required()
-def explain_threat():
-    """Generate LLM explanation for a detection event."""
-    data = request.get_json()
-    
-    # Validate required fields
-    required_fields = ['src_ip', 'dst_ip', 'protocol', 'reason', 'rf_confidence', 'rl_action', 'severity']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({'error': f'Missing required field: {field}'}), 400
-    
-    try:
-        explanation = threat_explainer.explain(data)
-        return jsonify({'explanation': explanation})
-    except Exception as e:
-        print(f"[API] Error generating explanation: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-# ADD THIS: Evaluation metrics endpoint
-@app.route('/api/evaluation/latest', methods=['GET'])
-@jwt_required()
-def get_latest_evaluation():
-    """Return the latest evaluation report from evaluate.py."""
-    try:
-        import os
-        eval_report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'evaluation_report.json')
-        
-        if not os.path.exists(eval_report_path):
-            return jsonify({'error': 'No evaluation report found. Run evaluate.py first.'}), 404
-        
-        with open(eval_report_path, 'r') as f:
-            report = json.load(f)
-        
-        return jsonify(report)
-    except Exception as e:
-        print(f"[API] Error loading evaluation report: {e}")
-        return jsonify({'error': str(e)}), 500
 
 
 # =====================================================================
