@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { io } from 'socket.io-client';
 import Login from './Login';
 import NetworkTrafficView from './NetworkTrafficView';
 import ImmutableLogsView from './ImmutableLogsView';
@@ -691,9 +692,9 @@ const App = () => {
     const [user, setUser] = useState(null);
     const [token, setToken] = useState(null);
     const [currentPage, setCurrentPage] = useState('dashboard');
-    const [alerts, setAlerts] = useState([]); 
+    const [alerts, setAlerts] = useState([]);
     const [currentLog, setCurrentLog] = useState([]);
-    const [isLoading, setIsLoading] = useState(true); 
+    const [isLoading, setIsLoading] = useState(true);
     const [metrics, setMetrics] = useState({
         activeThreats: 'N/A',
         blockedAttacks: 'N/A',
@@ -701,6 +702,7 @@ const App = () => {
         systemHealth: 'N/A',
     });
     const [backendError, setBackendError] = useState(false);
+    const [toasts, setToasts] = useState([]);
 
     // Check for existing session on mount
     useEffect(() => {
@@ -801,6 +803,34 @@ const App = () => {
             fetchInitialData();
         }
     }, [fetchInitialData, isAuthenticated, token]);
+
+    // Socket.IO connection for high-severity alerts
+    useEffect(() => {
+        if (!isAuthenticated) return;
+
+        const socket = io('http://localhost:5000', {
+            transports: ['websocket', 'polling'],
+        });
+
+        socket.on('high_severity_alert', (alert) => {
+            const toast = {
+                id: Date.now(),
+                src_ip: alert.src_ip,
+                reason: alert.reason,
+                timestamp: alert.timestamp,
+            };
+            setToasts(prev => [toast, ...prev]);
+
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                setToasts(prev => prev.filter(t => t.id !== toast.id));
+            }, 5000);
+        });
+
+        return () => {
+            socket.disconnect();
+        };
+    }, [isAuthenticated]);
 
 
     // --- Core Simulation Logic ---
@@ -955,6 +985,10 @@ const App = () => {
         );
     }
 
+    const dismissToast = (id) => {
+        setToasts(prev => prev.filter(t => t.id !== id));
+    };
+
     return (
         <div className="flex bg-[#0d1117] min-h-screen font-sans">
             <Sidebar currentPage={currentPage} setCurrentPage={setCurrentPage} />
@@ -982,6 +1016,36 @@ const App = () => {
                     {renderContent}
                 </div>
             </main>
+
+            {/* Toast Stack */}
+            <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+                {toasts.map(toast => (
+                    <div
+                        key={toast.id}
+                        className="bg-[#161b22] border-l-4 border-red-500 rounded-lg shadow-lg p-4 min-w-[300px] max-w-[400px] animate-slide-in"
+                        style={{
+                            animation: 'slideInRight 0.3s ease-out',
+                        }}
+                    >
+                        <div className="flex items-start justify-between">
+                            <div className="flex items-start gap-3 flex-1">
+                                <ShieldCheckIcon className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                                <div className="flex-1">
+                                    <p className="text-white font-bold font-mono text-sm">{toast.src_ip}</p>
+                                    <p className="text-gray-400 text-xs mt-1">{toast.reason}</p>
+                                    <p className="text-gray-500 text-xs mt-1">{new Date(toast.timestamp).toLocaleTimeString()}</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => dismissToast(toast.id)}
+                                className="text-gray-500 hover:text-white transition ml-2 flex-shrink-0"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 };
