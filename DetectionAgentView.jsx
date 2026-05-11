@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { io } from 'socket.io-client';
 
 const BrainIcon = (props) => (
     <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg>
@@ -42,6 +43,7 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
     const [starting, setStarting] = useState(false);
     const [responseStatus, setResponseStatus] = useState(null);
     const [xaiLatest, setXaiLatest] = useState(null);
+    const [socketConnected, setSocketConnected] = useState(false);
 
     const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 
@@ -116,14 +118,39 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
             setLoading(false);
         };
         init();
+
+        // Initialize Socket.IO connection
+        const socket = io('http://localhost:5000', {
+            transports: ['websocket', 'polling'],
+        });
+
+        socket.on('connect', () => {
+            setSocketConnected(true);
+        });
+
+        socket.on('disconnect', () => {
+            setSocketConnected(false);
+        });
+
+        socket.on('new_detection', (detection) => {
+            setDetections(prev => {
+                const newDetections = [detection, ...prev];
+                return newDetections.slice(0, 200);
+            });
+        });
+
+        // Poll for other data (status, Q-table, XAI, response) but not detections
         const interval = setInterval(() => {
             fetchStatus();
-            fetchDetections();
             fetchXAILatest();
             if (activeTab === 'qtable') fetchQTable();
             if (activeTab === 'response') fetchResponseStatus();
         }, 3000);
-        return () => clearInterval(interval);
+
+        return () => {
+            clearInterval(interval);
+            socket.disconnect();
+        };
     }, [activeTab, fetchStatus, fetchDetections, fetchQTable, fetchResponseStatus, fetchXAILatest]);
 
     const startAgent = async (simulation = true) => {
@@ -330,7 +357,7 @@ const DetectionAgentView = ({ token, onNavigateToXAI }) => {
             </div>
 
             {/* Tab Content */}
-            {activeTab === 'live' && <LiveDetectionsPanel detections={detections} />}
+            {activeTab === 'live' && <LiveDetectionsPanel detections={detections} socketConnected={socketConnected} />}
             {activeTab === 'qtable' && <QTablePanel qTable={qTable} rlStats={rlStats} />}
             {activeTab === 'response' && <ResponseAgentPanel token={token} />}
             {activeTab === 'viz' && <VisualizationsPanel token={token} />}
@@ -347,7 +374,7 @@ const StatusCard = ({ label, value, color }) => (
     </div>
 );
 
-const LiveDetectionsPanel = ({ detections }) => {
+const LiveDetectionsPanel = ({ detections, socketConnected }) => {
     const [explanations, setExplanations] = useState({});
     const [expandedRows, setExpandedRows] = useState(new Set());
     const [loadingExplanations, setLoadingExplanations] = useState(new Set());
@@ -422,10 +449,16 @@ const LiveDetectionsPanel = ({ detections }) => {
     return (
         <div className="bg-[#161b22] rounded-xl border border-gray-800 overflow-hidden">
             <div className="px-4 py-2 border-b border-gray-800 flex items-center justify-between">
-                <span className="text-xs text-gray-400">
-                    <span className="inline-block w-2 h-2 bg-blue-400 rounded-full mr-1"></span> Blue = Your IP (Outbound)
-                    <span className="inline-block w-2 h-2 bg-green-400 rounded-full ml-3 mr-1"></span> Green = External (Inbound)
-                </span>
+                <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                        <span className={`inline-block w-2 h-2 rounded-full ${socketConnected ? 'bg-green-500' : 'bg-gray-500'}`}></span>
+                        <span className="text-xs text-gray-400">Live Detections</span>
+                    </div>
+                    <span className="text-xs text-gray-500">
+                        <span className="inline-block w-2 h-2 bg-blue-400 rounded-full mr-1"></span> Blue = Your IP (Outbound)
+                        <span className="inline-block w-2 h-2 bg-green-400 rounded-full ml-3 mr-1"></span> Green = External (Inbound)
+                    </span>
+                </div>
             </div>
             <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
                 <table className="min-w-full divide-y divide-gray-800">
