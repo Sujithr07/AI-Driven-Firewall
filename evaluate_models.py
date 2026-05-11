@@ -438,6 +438,8 @@ def train_and_evaluate_nslkdd():
     
     print(f"\nNSL-KDD results saved to data/eval_results_nslkdd.json")
     print("="*70)
+    
+    return nslkdd_output
 
 
 def main():
@@ -494,7 +496,38 @@ def main():
 
     # Run NSL-KDD retrained evaluation
     print("\nRunning NSL-KDD retrained evaluation...")
-    train_and_evaluate_nslkdd()
+    nslkdd_results = train_and_evaluate_nslkdd()
+
+    # Save combined results file for API
+    combined_output = {
+        'original_models': {
+            'rf': rf_metrics,
+            'xgb': xgb_metrics,
+            'ensemble': ensemble_metrics
+        },
+        'nslkdd_trained': {
+            'rf': nslkdd_results.get('rf_nslkdd'),
+            'xgb': nslkdd_results.get('xgb_nslkdd'),
+            'ensemble': nslkdd_results.get('ensemble_nslkdd')
+        },
+        'distribution_shift_note': (
+            "Original models were trained on live Scapy traffic features (proto_num, sport, dport, "
+            "pkt_size, IP flags). NSL-KDD represents a domain shift - it uses 1999 DARPA lab data "
+            "with connection-level features (protocol_type, service, flag, src_bytes, dst_bytes). "
+            "Low accuracy is expected due to this feature space mismatch."
+        ),
+        'baseline_comparison': baseline_info,
+        'recommendation': (
+            "Retrain on NSL-KDD for in-distribution benchmark, "
+            "or collect labeled live traffic for true production evaluation"
+        ),
+        'timestamp': datetime.now().isoformat()
+    }
+
+    with open('data/eval_results.json', 'w') as f:
+        json.dump(combined_output, f, indent=2)
+
+    print(f"\nCombined results saved to data/eval_results.json")
 
 
 if __name__ == "__main__":

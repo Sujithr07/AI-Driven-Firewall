@@ -345,9 +345,9 @@ const ModelEvaluationPanel = ({ evalResults }) => {
         );
     }
 
-    const { rf, xgb, ensemble, distribution_shift_note, baseline_comparison, recommendation } = evalResults;
+    const { original_models, nslkdd_trained, distribution_shift_note, baseline_comparison, recommendation, timestamp } = evalResults;
 
-    const MetricCard = ({ title, metrics, modelColor }) => {
+    const MetricCard = ({ title, metrics, modelColor, note }) => {
         if (!metrics) return null;
         return (
             <div className="bg-[#161b22] rounded-xl border border-gray-800 p-4">
@@ -369,10 +369,10 @@ const ModelEvaluationPanel = ({ evalResults }) => {
                         <span className="text-xs text-gray-500">F1 (macro)</span>
                         <span className={`text-sm font-mono ${modelColor}`}>{metrics.f1_macro?.toFixed(4) || 'N/A'}</span>
                     </div>
-                    {modelColor === 'text-blue-400' && (
+                    {note && (
                         <div className="mt-3 pt-3 border-t border-gray-800">
                             <p className="text-xs text-amber-400 leading-relaxed">
-                                ⚠️ {distribution_shift_note}
+                                {note}
                             </p>
                         </div>
                     )}
@@ -382,12 +382,69 @@ const ModelEvaluationPanel = ({ evalResults }) => {
     };
 
     return (
-        <div className="space-y-4">
-            {/* Metrics Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <MetricCard title="RandomForest" metrics={rf} modelColor="text-blue-400" />
-                <MetricCard title="XGBoost" metrics={xgb} modelColor="text-purple-400" />
-                <MetricCard title="Ensemble" metrics={ensemble} modelColor="text-green-400" />
+        <div className="space-y-6">
+            {/* Group 1: Original Models */}
+            <div>
+                <div className="flex items-center gap-3 mb-4">
+                    <h3 className="text-lg font-semibold text-white">Original firewall models (distribution shift test)</h3>
+                    <span className="px-2 py-1 rounded-full text-xs font-bold bg-amber-600/20 text-amber-400 border border-amber-500/30">
+                        Out-of-distribution
+                    </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <MetricCard 
+                        title="RandomForest" 
+                        metrics={original_models?.rf} 
+                        modelColor="text-blue-400"
+                        note="Trained on live traffic, tested on NSL-KDD"
+                    />
+                    <MetricCard 
+                        title="XGBoost" 
+                        metrics={original_models?.xgb} 
+                        modelColor="text-purple-400"
+                        note="Trained on live traffic, tested on NSL-KDD"
+                    />
+                    <MetricCard 
+                        title="Ensemble" 
+                        metrics={original_models?.ensemble} 
+                        modelColor="text-green-400"
+                        note="Trained on live traffic, tested on NSL-KDD"
+                    />
+                </div>
+            </div>
+
+            {/* Distribution Shift Explanation */}
+            <div className="text-center py-2">
+                <p className="text-xs text-gray-500 leading-relaxed">
+                    The gap between groups demonstrates distribution shift — a known challenge in deploying IDS models across different network environments.
+                </p>
+            </div>
+
+            {/* Group 2: NSL-KDD Retrained Models */}
+            <div>
+                <div className="flex items-center gap-3 mb-4">
+                    <h3 className="text-lg font-semibold text-white">NSL-KDD retrained models</h3>
+                    <span className="px-2 py-1 rounded-full text-xs font-bold bg-green-600/20 text-green-400 border border-green-500/30">
+                        In-distribution
+                    </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <MetricCard 
+                        title="RandomForest (NSL-KDD)" 
+                        metrics={nslkdd_trained?.rf} 
+                        modelColor="text-blue-400"
+                    />
+                    <MetricCard 
+                        title="XGBoost (NSL-KDD)" 
+                        metrics={nslkdd_trained?.xgb} 
+                        modelColor="text-purple-400"
+                    />
+                </div>
+                <div className="mt-4 text-center">
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-2xl mx-auto">
+                        81.93% accuracy using 11 real-time capturable features. Papers reporting 95–99% use all 41 features including time-window aggregates unavailable in live single-packet inspection.
+                    </p>
+                </div>
             </div>
 
             {/* Baseline Comparison */}
@@ -427,6 +484,19 @@ const ModelEvaluationPanel = ({ evalResults }) => {
                     <p className="text-sm text-blue-300 leading-relaxed">{recommendation}</p>
                 </div>
             )}
+
+            {/* Timestamp and Button */}
+            <div className="flex items-center justify-between pt-4 border-t border-gray-800">
+                <span className="text-xs text-gray-500">
+                    Last updated: {timestamp ? new Date(timestamp).toLocaleString() : 'N/A'}
+                </span>
+                <button 
+                    onClick={() => window.location.href = '/api/run-evaluation'}
+                    className="px-4 py-2 bg-[#00ff7f]/20 border border-[#00ff7f] text-[#00ff7f] rounded-lg hover:bg-[#00ff7f]/40 transition text-sm"
+                >
+                    Run NSL-KDD evaluation
+                </button>
+            </div>
         </div>
     );
 };
@@ -594,10 +664,12 @@ const XAIDashboardView = ({ token }) => {
 
     const fetchEvalResults = useCallback(async () => {
         try {
-            const res = await fetch('/data/eval_results.json');
+            const res = await fetch('/api/eval-results');
             if (res.ok) {
                 const data = await res.json();
-                setEvalResults(data);
+                if (data.status !== 'not_run') {
+                    setEvalResults(data);
+                }
             }
         } catch (e) {
             console.error('Failed to fetch eval results:', e);

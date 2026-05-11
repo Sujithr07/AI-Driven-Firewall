@@ -183,7 +183,7 @@ def _get_local_ips():
 # Feature extraction from a Scapy packet
 # ---------------------------------------------------------------------------
 
- def extract_features(packet):
+def extract_features(packet):
     """
     Extract numeric + categorical features from a raw Scapy packet.
     Returns (feature_dict, numeric_vector) or None if packet is not IP.

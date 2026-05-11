@@ -1820,6 +1820,23 @@ def explain_threat():
         }), 200
 
 
+@app.route('/api/eval-results', methods=['GET'])
+def get_eval_results():
+    """Get model evaluation results from data/eval_results.json."""
+    eval_results_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'eval_results.json')
+    
+    if not os.path.exists(eval_results_path):
+        return jsonify({"status": "not_run"}), 200
+    
+    try:
+        with open(eval_results_path, 'r') as f:
+            data = json.load(f)
+        return jsonify(data), 200
+    except Exception as e:
+        print(f"Error reading eval results: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 200
+
+
 if __name__ == '__main__':
     print("=======================================================================")
     print("FLASK BACKEND RUNNING: Access the API at http://127.0.0.1:5000")
