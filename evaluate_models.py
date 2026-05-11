@@ -12,6 +12,18 @@ from datetime import datetime
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
+try:
+    from sklearn.ensemble import RandomForestClassifier
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+
+try:
+    import xgboost as xgb
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
+
 # Feature columns from NSL-KDD that match our needs
 # We'll add a dummy feature to reach 11 features to match the model
 FEATURE_COLUMNS = [
@@ -200,7 +212,7 @@ def evaluate_ensemble(X_test, y_test, rf_metrics, xgb_metrics):
     return metrics
 
 
-def print_summary_table(results):
+def print_summary_table(results, baseline_info):
     """Print a clean summary table."""
     print("\n" + "="*70)
     print("EVALUATION SUMMARY")
@@ -235,17 +247,65 @@ def print_summary_table(results):
         print(line)
     
     print("="*70)
+    
+    # Print baseline comparison
+    print("\nBASELINE COMPARISON")
+    print("-"*70)
+    print(f"Majority class accuracy (always predict {baseline_info['majority_class']}): {baseline_info['majority_class_accuracy']:.4f}")
+    print(f"Random accuracy baseline: {baseline_info['random_accuracy']:.4f}")
+    print(f"Test distribution: {baseline_info['normal_samples']} normal, {baseline_info['attack_samples']} attack")
+    
+    # Print domain shift note
+    print("\n" + "="*70)
+    print("DOMAIN SHIFT NOTE")
+    print("="*70)
+    print("Original models were trained on live Scapy traffic features")
+    print("(proto_num, sport, dport, pkt_size, IP flags).")
+    print("NSL-KDD represents a domain shift - it uses 1999 DARPA lab data")
+    print("with connection-level features (protocol_type, service, flag,")
+    print("src_bytes, dst_bytes). Low accuracy is expected due to this")
+    print("feature space mismatch.")
+    print("="*70)
+    print("\nRECOMMENDATION")
+    print("-"*70)
+    print("Retrain on NSL-KDD for in-distribution benchmark,")
+    print("or collect labeled live traffic for true production evaluation")
+    print("="*70)
 
 
-def save_results(results):
+def save_results(results, y_test):
     """Save results to JSON file."""
     os.makedirs('data', exist_ok=True)
+    
+    # Calculate baseline metrics
+    total_samples = len(y_test)
+    attack_count = sum(y_test == 1)
+    normal_count = sum(y_test == 0)
+    majority_class_accuracy = max(attack_count, normal_count) / total_samples
     
     output = {
         'rf': results.get('rf'),
         'xgb': results.get('xgb'),
         'ensemble': results.get('ensemble'),
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        'distribution_shift_note': (
+            "Original models were trained on live Scapy traffic features (proto_num, sport, dport, "
+            "pkt_size, IP flags). NSL-KDD represents a domain shift - it uses 1999 DARPA lab data "
+            "with connection-level features (protocol_type, service, flag, src_bytes, dst_bytes). "
+            "Low accuracy is expected due to this feature space mismatch."
+        ),
+        'baseline_comparison': {
+            'majority_class_accuracy': round(majority_class_accuracy, 4),
+            'majority_class': 'attack' if attack_count > normal_count else 'normal',
+            'random_accuracy': 0.5,
+            'test_samples': total_samples,
+            'attack_samples': int(attack_count),
+            'normal_samples': int(normal_count)
+        },
+        'recommendation': (
+            "Retrain on NSL-KDD for in-distribution benchmark, "
+            "or collect labeled live traffic for true production evaluation"
+        )
     }
     
     output_path = 'data/eval_results.json'
@@ -253,6 +313,131 @@ def save_results(results):
         json.dump(output, f, indent=2)
     
     print(f"\nResults saved to {output_path}")
+
+
+def train_and_evaluate_nslkdd():
+    """Train new models on NSL-KDD data and evaluate them."""
+    print("\n" + "="*70)
+    print("TRAINING NEW MODELS ON NSL-KDD DATA")
+    print("="*70)
+    
+    # Load data
+    train_df, test_df = load_data()
+    
+    # Preprocess
+    print("\nPreprocessing data...")
+    X_train, y_train, label_encoders = preprocess_data(train_df, fit=True)
+    X_test, y_test, _ = preprocess_data(test_df, label_encoders=label_encoders, fit=False)
+    
+    print(f"Train shape: {X_train.shape}, Test shape: {X_test.shape}")
+    print(f"Train distribution: Normal={sum(y_train==0)}, Attack={sum(y_train==1)}")
+    print(f"Test distribution: Normal={sum(y_test==0)}, Attack={sum(y_test==1)}")
+    
+    # Train RandomForest on NSL-KDD
+    print("\nTraining RandomForest on NSL-KDD...")
+    rf_nslkdd_metrics = None
+    if SKLEARN_AVAILABLE:
+        rf_model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=15,
+            random_state=42,
+            n_jobs=-1
+        )
+        rf_model.fit(X_train, y_train)
+        y_pred_rf = rf_model.predict(X_test)
+        rf_nslkdd_metrics = compute_metrics(y_test, y_pred_rf)
+        print(f"  Accuracy: {rf_nslkdd_metrics['accuracy']:.4f}")
+        print(f"  F1 (macro): {rf_nslkdd_metrics['f1_macro']:.4f}")
+        
+        # Save the NSL-KDD trained model
+        os.makedirs('data', exist_ok=True)
+        with open('data/rf_model_nslkdd.pkl', 'wb') as f:
+            pickle.dump(rf_model, f)
+        print("  Saved to data/rf_model_nslkdd.pkl")
+    else:
+        print("  Sklearn not available. Skipping.")
+    
+    # Train XGBoost on NSL-KDD
+    print("\nTraining XGBoost on NSL-KDD...")
+    xgb_nslkdd_metrics = None
+    if XGBOOST_AVAILABLE:
+        xgb_model = xgb.XGBClassifier(
+            n_estimators=100,
+            max_depth=10,
+            learning_rate=0.1,
+            use_label_encoder=False,
+            eval_metric='logloss',
+            random_state=42,
+            n_jobs=-1,
+            verbosity=0
+        )
+        xgb_model.fit(X_train, y_train)
+        y_pred_xgb = xgb_model.predict(X_test)
+        xgb_nslkdd_metrics = compute_metrics(y_test, y_pred_xgb)
+        print(f"  Accuracy: {xgb_nslkdd_metrics['accuracy']:.4f}")
+        print(f"  F1 (macro): {xgb_nslkdd_metrics['f1_macro']:.4f}")
+        
+        # Save the NSL-KDD trained model
+        with open('data/xgb_model_nslkdd.pkl', 'wb') as f:
+            pickle.dump(xgb_model, f)
+        print("  Saved to data/xgb_model_nslkdd.pkl")
+    else:
+        print("  XGBoost not available. Skipping.")
+    
+    # Ensemble (average probabilities)
+    print("\nEvaluating Ensemble (NSL-KDD trained)...")
+    ensemble_nslkdd_metrics = None
+    if rf_nslkdd_metrics is not None and xgb_nslkdd_metrics is not None:
+        rf_proba = rf_model.predict_proba(X_test)
+        xgb_proba = xgb_model.predict_proba(X_test)
+        
+        rf_attack_prob = rf_proba[:, 1]
+        xgb_attack_prob = xgb_proba[:, 1]
+        avg_attack_prob = 0.5 * rf_attack_prob + 0.5 * xgb_attack_prob
+        
+        y_pred_ensemble = (avg_attack_prob >= 0.5).astype(int)
+        ensemble_nslkdd_metrics = compute_metrics(y_test, y_pred_ensemble)
+        print(f"  Accuracy: {ensemble_nslkdd_metrics['accuracy']:.4f}")
+        print(f"  F1 (macro): {ensemble_nslkdd_metrics['f1_macro']:.4f}")
+    else:
+        print("  Skipping: one or both models not available")
+    
+    # Calculate baseline info
+    total_samples = len(y_test)
+    attack_count = sum(y_test == 1)
+    normal_count = sum(y_test == 0)
+    baseline_info = {
+        'majority_class_accuracy': max(attack_count, normal_count) / total_samples,
+        'majority_class': 'attack' if attack_count > normal_count else 'normal',
+        'random_accuracy': 0.5,
+        'test_samples': total_samples,
+        'attack_samples': int(attack_count),
+        'normal_samples': int(normal_count)
+    }
+    
+    # Print summary
+    results = {
+        'RandomForest (NSL-KDD)': rf_nslkdd_metrics,
+        'XGBoost (NSL-KDD)': xgb_nslkdd_metrics,
+        'Ensemble (NSL-KDD)': ensemble_nslkdd_metrics
+    }
+    print_summary_table(results, baseline_info)
+    
+    # Save NSL-KDD results
+    nslkdd_output = {
+        'rf_nslkdd': rf_nslkdd_metrics,
+        'xgb_nslkdd': xgb_nslkdd_metrics,
+        'ensemble_nslkdd': ensemble_nslkdd_metrics,
+        'timestamp': datetime.now().isoformat(),
+        'note': 'Models trained on NSL-KDD dataset - in-distribution evaluation',
+        'baseline_comparison': baseline_info
+    }
+    
+    with open('data/eval_results_nslkdd.json', 'w') as f:
+        json.dump(nslkdd_output, f, indent=2)
+    
+    print(f"\nNSL-KDD results saved to data/eval_results_nslkdd.json")
+    print("="*70)
 
 
 def main():
@@ -284,15 +469,32 @@ def main():
         'Ensemble': ensemble_metrics
     }
     
+    # Calculate baseline info
+    total_samples = len(y_test)
+    attack_count = sum(y_test == 1)
+    normal_count = sum(y_test == 0)
+    baseline_info = {
+        'majority_class_accuracy': max(attack_count, normal_count) / total_samples,
+        'majority_class': 'attack' if attack_count > normal_count else 'normal',
+        'random_accuracy': 0.5,
+        'test_samples': total_samples,
+        'attack_samples': int(attack_count),
+        'normal_samples': int(normal_count)
+    }
+    
     # Print summary
-    print_summary_table(results)
+    print_summary_table(results, baseline_info)
     
     # Save results
     save_results({
         'rf': rf_metrics,
         'xgb': xgb_metrics,
         'ensemble': ensemble_metrics
-    })
+    }, y_test)
+
+    # Run NSL-KDD retrained evaluation
+    print("\nRunning NSL-KDD retrained evaluation...")
+    train_and_evaluate_nslkdd()
 
 
 if __name__ == "__main__":

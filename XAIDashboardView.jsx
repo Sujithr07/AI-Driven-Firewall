@@ -336,6 +336,101 @@ const SHAPPanel = ({ detection, featureStats }) => {
     );
 };
 
+const ModelEvaluationPanel = ({ evalResults }) => {
+    if (!evalResults) {
+        return (
+            <div className="bg-[#161b22] rounded-xl border border-gray-800 p-8 text-center">
+                <p className="text-gray-500">No evaluation results available. Run evaluate_models.py to generate metrics.</p>
+            </div>
+        );
+    }
+
+    const { rf, xgb, ensemble, distribution_shift_note, baseline_comparison, recommendation } = evalResults;
+
+    const MetricCard = ({ title, metrics, modelColor }) => {
+        if (!metrics) return null;
+        return (
+            <div className="bg-[#161b22] rounded-xl border border-gray-800 p-4">
+                <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">{title}</h4>
+                <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                        <span className="text-xs text-gray-500">Accuracy</span>
+                        <span className={`text-sm font-mono ${modelColor}`}>{metrics.accuracy?.toFixed(4) || 'N/A'}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                        <span className="text-xs text-gray-500">Precision</span>
+                        <span className={`text-sm font-mono ${modelColor}`}>{metrics.precision?.toFixed(4) || 'N/A'}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                        <span className="text-xs text-gray-500">Recall</span>
+                        <span className={`text-sm font-mono ${modelColor}`}>{metrics.recall?.toFixed(4) || 'N/A'}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                        <span className="text-xs text-gray-500">F1 (macro)</span>
+                        <span className={`text-sm font-mono ${modelColor}`}>{metrics.f1_macro?.toFixed(4) || 'N/A'}</span>
+                    </div>
+                    {modelColor === 'text-blue-400' && (
+                        <div className="mt-3 pt-3 border-t border-gray-800">
+                            <p className="text-xs text-amber-400 leading-relaxed">
+                                ⚠️ {distribution_shift_note}
+                            </p>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    };
+
+    return (
+        <div className="space-y-4">
+            {/* Metrics Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <MetricCard title="RandomForest" metrics={rf} modelColor="text-blue-400" />
+                <MetricCard title="XGBoost" metrics={xgb} modelColor="text-purple-400" />
+                <MetricCard title="Ensemble" metrics={ensemble} modelColor="text-green-400" />
+            </div>
+
+            {/* Baseline Comparison */}
+            {baseline_comparison && (
+                <div className="bg-[#161b22] rounded-xl border border-gray-800 p-4">
+                    <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Baseline Comparison</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                        <div>
+                            <span className="text-gray-500">Majority class accuracy</span>
+                            <span className="text-white ml-2 font-mono">{baseline_comparison.majority_class_accuracy?.toFixed(4)}</span>
+                            <span className="text-gray-600 ml-1">(always predict {baseline_comparison.majority_class})</span>
+                        </div>
+                        <div>
+                            <span className="text-gray-500">Random accuracy baseline</span>
+                            <span className="text-white ml-2 font-mono">{baseline_comparison.random_accuracy}</span>
+                        </div>
+                        <div>
+                            <span className="text-gray-500">Test distribution</span>
+                            <span className="text-white ml-2 font-mono">{baseline_comparison.normal_samples} normal, {baseline_comparison.attack_samples} attack</span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Domain Shift Note */}
+            {distribution_shift_note && (
+                <div className="bg-amber-900/10 rounded-xl border border-amber-500/30 p-4">
+                    <h4 className="text-sm font-semibold text-amber-400 uppercase tracking-wider mb-2">⚠️ Domain Shift Warning</h4>
+                    <p className="text-sm text-amber-300 leading-relaxed">{distribution_shift_note}</p>
+                </div>
+            )}
+
+            {/* Recommendation */}
+            {recommendation && (
+                <div className="bg-blue-900/10 rounded-xl border border-blue-500/30 p-4">
+                    <h4 className="text-sm font-semibold text-blue-400 uppercase tracking-wider mb-2">💡 Recommendation</h4>
+                    <p className="text-sm text-blue-300 leading-relaxed">{recommendation}</p>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const QTableInsightsPanel = ({ detection }) => {
     const stateParts = (detection.rl_state || '|||').split('|');
     const reason = stateParts[0] || 'unknown';
@@ -462,6 +557,7 @@ const XAIDashboardView = ({ token }) => {
     const [loading, setLoading] = useState(true);
     const [activeSection, setActiveSection] = useState('pipeline');
     const [userSelected, setUserSelected] = useState(false);
+    const [evalResults, setEvalResults] = useState(null);
 
     const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 
@@ -496,16 +592,29 @@ const XAIDashboardView = ({ token }) => {
         }
     }, [token]);
 
+    const fetchEvalResults = useCallback(async () => {
+        try {
+            const res = await fetch('/data/eval_results.json');
+            if (res.ok) {
+                const data = await res.json();
+                setEvalResults(data);
+            }
+        } catch (e) {
+            console.error('Failed to fetch eval results:', e);
+        }
+    }, []);
+
     useEffect(() => {
         const init = async () => {
             await fetchDetections();
             await fetchFeatureStats();
+            await fetchEvalResults();
             setLoading(false);
         };
         init();
         const interval = setInterval(fetchDetections, 10000);
         return () => clearInterval(interval);
-    }, [fetchDetections, fetchFeatureStats]);
+    }, [fetchDetections, fetchFeatureStats, fetchEvalResults]);
 
     if (loading) {
         return (
@@ -535,6 +644,7 @@ const XAIDashboardView = ({ token }) => {
                     { id: 'pipeline', label: '🔬 Pipeline Walkthrough' },
                     { id: 'shap', label: '📊 SHAP Feature Importance' },
                     { id: 'qtable', label: '🧠 Q-Table Insights' },
+                    { id: 'evaluation', label: '📈 Model Evaluation' },
                 ].map(btn => (
                     <button
                         key={btn.id}
@@ -598,7 +708,9 @@ const XAIDashboardView = ({ token }) => {
 
                 {/* Right: Content area (2/3) */}
                 <div className="w-2/3">
-                    {!selectedDetection ? (
+                    {activeSection === 'evaluation' ? (
+                        <ModelEvaluationPanel evalResults={evalResults} />
+                    ) : !selectedDetection ? (
                         <div className="bg-[#161b22] rounded-xl border border-gray-800 p-8 text-center">
                             <p className="text-gray-500">Select a detection from the left panel to view its explanation</p>
                         </div>

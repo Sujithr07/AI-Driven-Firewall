@@ -1,0 +1,60 @@
+{
+  "rf_nslkdd": {
+    "accuracy": 0.8192867281760113,
+    "precision": 0.8387464652051966,
+    "recall": 0.83670915773017,
+    "f1_macro": 0.8192688852114645,
+    "confusion_matrix": [
+      [
+        9347,
+        364
+      ],
+      [
+        3710,
+        9123
+      ]
+    ]
+  },
+  "xgb_nslkdd": {
+    "accuracy": 0.8625354861603974,
+    "precision": 0.8690942787126923,
+    "recall": 0.8745092681334805,
+    "f1_macro": 0.8623703081412109,
+    "confusion_matrix": [
+      [
+        9332,
+        379
+      ],
+      [
+        2720,
+        10113
+      ]
+    ]
+  },
+  "ensemble_nslkdd": {
+    "accuracy": 0.8579222853087296,
+    "precision": 0.8658970248281302,
+    "recall": 0.8706200522137222,
+    "f1_macro": 0.8578037116321502,
+    "confusion_matrix": [
+      [
+        9345,
+        366
+      ],
+      [
+        2837,
+        9996
+      ]
+    ]
+  },
+  "timestamp": "2026-05-11T09:57:57.372911",
+  "note": "Models trained on NSL-KDD dataset - in-distribution evaluation",
+  "baseline_comparison": {
+    "majority_class_accuracy": 0.5692423704755145,
+    "majority_class": "attack",
+    "random_accuracy": 0.5,
+    "test_samples": 22544,
+    "attack_samples": 12833,
+    "normal_samples": 9711
+  }
+}
