@@ -26,3 +26,12 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Model files
+dqn_model.pt
+lstm_model.pt
+xgb_model.pkl
+
+# FAISS index files
+data/faiss_logs.json
+data/faiss.index

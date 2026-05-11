@@ -19,6 +19,8 @@ import base64
 from detection_agent import DetectionAgent, TrafficClassifier
 from response_agent import ResponseAgent
 import threat_explainer
+from log_embedder import embedder
+import rag_agent
 
 # Load environment variables
 load_dotenv()
@@ -477,6 +479,9 @@ def init_db():
 # Initialize database on startup
 init_db()
 
+# Load embedder index on startup
+embedder.load()
+
 # Track app start time to reset metrics on launch
 APP_START_TIME = time.time() * 1000  # Store in milliseconds to match timestamp format
 
@@ -510,6 +515,7 @@ def _save_detection_to_db(detection):
             'response_action': detection.get('response_action', 'none'),
             'response_rule_type': detection.get('response_rule_type', 'none'),
         })
+        embedder.add_logs([detection])
     except Exception as e:
         print(f"[DetectionAgent DB] Error saving detection: {e}")
 
@@ -846,6 +852,16 @@ def simulate_traffic():
         LOG_DATABASE.insert(0, new_log_entry)
         if len(LOG_DATABASE) > MAX_LOG_ENTRIES:
             LOG_DATABASE.pop()
+
+        # Add to embedder for RAG search
+        embedder.add_logs([{
+            'timestamp': timestamp,
+            'src_ip': source_ip,
+            'protocol': traffic_profile['protocol'],
+            'reason': decision['reason'],
+            'action': decision['decision'],
+            'severity': decision['severity']
+        }])
 
         # Update network stats
         update_network_stats(decision['decision'])
@@ -1834,7 +1850,61 @@ def get_eval_results():
         return jsonify(data), 200
     except Exception as e:
         print(f"Error reading eval results: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 200
+
+
+@app.route('/api/log-query', methods=['POST'])
+@jwt_required()
+def log_query():
+    """Query logs using RAG with Gemini."""
+    try:
+        data = request.get_json()
+        question = data.get('question', '')
+        if not question:
+            return jsonify({'error': 'Question is required'}), 400
+        
+        result = rag_agent.answer_log_query(question)
+        return jsonify(result), 200
+    except Exception as e:
+        print(f"Error in log_query: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/embed-existing-logs', methods=['POST'])
+@jwt_required()
+def embed_existing_logs():
+    """Load recent detections from database and bulk-add them to the embedder."""
+    try:
+        # Load recent detection logs from database
+        result = supabase.table('detection_logs').select('*').order('timestamp', desc=True).limit(500).execute()
+        logs = result.data
+        
+        if not logs:
+            return jsonify({'message': 'No logs found to embed'}), 200
+        
+        # Convert to format expected by embedder
+        embed_logs = []
+        for log in logs:
+            embed_logs.append({
+                'timestamp': log.get('timestamp', ''),
+                'src_ip': log.get('src_ip', ''),
+                'protocol': log.get('protocol', ''),
+                'reason': log.get('reason', ''),
+                'action': log.get('rl_action', ''),
+                'severity': log.get('severity', '')
+            })
+        
+        embedder.add_logs(embed_logs)
+        
+        # Save the index
+        embedder.save()
+        
+        return jsonify({
+            'message': f'Embedded {len(embed_logs)} logs',
+            'count': len(embed_logs)
+        }), 200
+    except Exception as e:
+        print(f"Error in embed_existing_logs: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
