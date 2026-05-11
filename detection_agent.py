@@ -859,11 +859,12 @@ class DetectionAgent:
       5. Computes reward and updates Q-table
     """
 
-    def __init__(self, db_callback=None, fl_server_url=None, client_id=None, response_agent=None):
+    def __init__(self, db_callback=None, socketio_callback=None, fl_server_url=None, client_id=None, response_agent=None):
         self.classifier = EnsemblePredictor()
         self.rl_agent = DQNAgent()
         self.lstm = LSTMDetector() if LSTM_AVAILABLE else None
         self.db_callback = db_callback  # Function to save detections to DB
+        self.socketio_callback = socketio_callback  # Function to emit detection events via SocketIO
         self.response_agent = response_agent
 
         self._running = False
@@ -1133,6 +1134,13 @@ class DetectionAgent:
             except Exception:
                 pass
 
+        # Callback to emit via SocketIO
+        if self.socketio_callback:
+            try:
+                self.socketio_callback(detection)
+            except Exception:
+                pass
+
         # Auto-save periodically
         if self.stats["packets_processed"] % 100 == 0:
             self.classifier.save()
@@ -1295,6 +1303,12 @@ class DetectionAgent:
                 if self.db_callback:
                     try:
                         self.db_callback(detection)
+                    except Exception:
+                        pass
+
+                if self.socketio_callback:
+                    try:
+                        self.socketio_callback(detection)
                     except Exception:
                         pass
 

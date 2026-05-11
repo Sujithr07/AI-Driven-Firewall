@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_socketio import SocketIO, emit
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 import time
@@ -59,6 +60,9 @@ app.config['JWT_ALGORITHM'] = 'HS256'
 
 # Enable CORS for the frontend running on a different port
 CORS(app, supports_credentials=True)
+
+# Initialize SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 # Initialize JWT
 jwt = JWTManager(app)
@@ -520,6 +524,20 @@ def _save_detection_to_db(detection):
         print(f"[DetectionAgent DB] Error saving detection: {e}")
 
 
+def _emit_detection_via_socketio(detection):
+    """Callback to emit detection events via SocketIO."""
+    try:
+        socketio.emit("new_detection", detection)
+        if detection.get("severity") == "High":
+            socketio.emit("high_severity_alert", {
+                "src_ip": detection["src_ip"],
+                "reason": detection["reason"],
+                "timestamp": detection["timestamp"]
+            })
+    except Exception as e:
+        print(f"[DetectionAgent SocketIO] Error emitting detection: {e}")
+
+
 def _save_response_action_to_db(action_record):
     """Callback to persist response agent actions to the database."""
     try:
@@ -557,6 +575,7 @@ except Exception as _fl_err:
 
 detection_agent = DetectionAgent(
     db_callback=_save_detection_to_db,
+    socketio_callback=_emit_detection_via_socketio,
     fl_server_url=_fl_url,
     client_id=os.getenv("FL_CLIENT_ID", None),
     response_agent=response_agent,
@@ -1914,4 +1933,4 @@ if __name__ == '__main__':
     print("=======================================================================")
     print("Detection Agent: Use POST /api/agent/start to begin packet inspection")
     print("=======================================================================")
-    app.run(debug=True, port=5000)
+    socketio.run(app, debug=True, port=5000)
