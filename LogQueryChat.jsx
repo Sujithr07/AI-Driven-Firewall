@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { io } from 'socket.io-client';
 
 const MessageDotsIcon = (props) => (
     <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -15,6 +16,8 @@ const DatabaseIcon = (props) => (
 const LogQueryChat = ({ token }) => {
     const [question, setQuestion] = useState('');
     const [loading, setLoading] = useState(false);
+    const [streamingText, setStreamingText] = useState('');
+    const [isStreaming, setIsStreaming] = useState(false);
     const [answer, setAnswer] = useState(null);
     const [sources, setSources] = useState([]);
     const [showSources, setShowSources] = useState(false);
@@ -22,13 +25,45 @@ const LogQueryChat = ({ token }) => {
     const [seeding, setSeeding] = useState(false);
     const [seedMessage, setSeedMessage] = useState(null);
 
+    const socketRef = useRef(null);
+    const activeStreamIdRef = useRef(null);
+
+    useEffect(() => {
+        const socket = io('http://localhost:5000', {
+            transports: ['websocket', 'polling'],
+        });
+
+        socket.on('llm_stream', (data) => {
+            if (data.stream_id !== activeStreamIdRef.current) return;
+
+            if (data.done) {
+                setIsStreaming(false);
+                if (data.sources) setSources(data.sources);
+            } else {
+                setStreamingText((prev) => prev + data.token);
+            }
+        });
+
+        socketRef.current = socket;
+        return () => socket.disconnect();
+    }, []);
+
     const handleAsk = async (e) => {
         e.preventDefault();
         if (!question.trim()) return;
 
+        const streamId = crypto.randomUUID();
+        activeStreamIdRef.current = streamId;
+
         setLoading(true);
         setAnswer(null);
         setSources([]);
+        setShowSources(false);
+        setStreamingText('');
+        setIsStreaming(true);
+
+        const askedQuestion = question;
+        setQuestion('');
 
         try {
             const res = await fetch('/api/log-query', {
@@ -37,17 +72,16 @@ const LogQueryChat = ({ token }) => {
                     'Authorization': `Bearer ${token}`,
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ question }),
+                body: JSON.stringify({ question: askedQuestion, stream_id: streamId }),
             });
 
             if (res.ok) {
                 const data = await res.json();
+                // HTTP response is the final ground truth; SocketIO provided the live preview
                 setAnswer(data.answer);
                 setSources(data.sources || []);
-
-                // Add to chat history (keep last 5)
-                setChatHistory(prev => [
-                    { question, answer: data.answer, sources: data.sources || [] },
+                setChatHistory((prev) => [
+                    { question: askedQuestion, answer: data.answer, sources: data.sources || [] },
                     ...prev.slice(0, 4),
                 ]);
             } else {
@@ -58,13 +92,14 @@ const LogQueryChat = ({ token }) => {
             setAnswer('An error occurred. Please try again.');
         } finally {
             setLoading(false);
+            setIsStreaming(false);
+            setStreamingText('');
         }
     };
 
     const handleSeedIndex = async () => {
         setSeeding(true);
         setSeedMessage(null);
-
         try {
             const res = await fetch('/api/embed-existing-logs', {
                 method: 'POST',
@@ -73,7 +108,6 @@ const LogQueryChat = ({ token }) => {
                     'Content-Type': 'application/json',
                 },
             });
-
             if (res.ok) {
                 const data = await res.json();
                 setSeedMessage({ type: 'success', text: data.message || 'Index seeded successfully' });
@@ -81,7 +115,6 @@ const LogQueryChat = ({ token }) => {
                 setSeedMessage({ type: 'error', text: 'Failed to seed index' });
             }
         } catch (error) {
-            console.error('Error seeding index:', error);
             setSeedMessage({ type: 'error', text: 'An error occurred while seeding' });
         } finally {
             setSeeding(false);
@@ -90,9 +123,11 @@ const LogQueryChat = ({ token }) => {
 
     const formatTime = (timestamp) => {
         if (!timestamp) return 'N/A';
-        const date = new Date(timestamp);
-        return date.toLocaleTimeString();
+        return new Date(timestamp).toLocaleTimeString();
     };
+
+    // What to show in the live answer box
+    const displayText = isStreaming ? streamingText : answer;
 
     return (
         <div className="p-8">
@@ -133,9 +168,7 @@ const LogQueryChat = ({ token }) => {
                                 <div className="w-8 h-8 bg-[#00ff7f]/20 rounded-full flex items-center justify-center flex-shrink-0">
                                     <span className="text-[#00ff7f] text-sm">Q</span>
                                 </div>
-                                <div className="flex-1">
-                                    <p className="text-gray-300 font-medium">{item.question}</p>
-                                </div>
+                                <p className="text-gray-300 font-medium pt-1">{item.question}</p>
                             </div>
                             <div className="flex items-start gap-3">
                                 <div className="w-8 h-8 bg-purple-500/20 rounded-full flex items-center justify-center flex-shrink-0">
@@ -193,22 +226,31 @@ const LogQueryChat = ({ token }) => {
                 </div>
             </form>
 
-            {/* Answer */}
-            {answer && (
+            {/* Streaming / Final Answer */}
+            {(isStreaming || answer) && (
                 <div className="bg-[#161b22] p-6 rounded-xl border border-gray-800 shadow-lg mb-4">
                     <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 bg-purple-500/20 rounded-full flex items-center justify-center flex-shrink-0">
-                            <SparklesIcon className="w-4 h-4 text-purple-400" />
+                        <div className="w-8 h-8 bg-purple-500/20 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                            {isStreaming ? (
+                                <div className="w-4 h-4 rounded-full border-2 border-purple-400 border-t-transparent animate-spin" />
+                            ) : (
+                                <SparklesIcon className="w-4 h-4 text-purple-400" />
+                            )}
                         </div>
                         <div className="flex-1">
-                            <p className="text-gray-200 text-lg leading-relaxed">{answer}</p>
+                            <p className="text-gray-200 text-lg leading-relaxed">
+                                {displayText}
+                                {isStreaming && (
+                                    <span className="inline-block w-0.5 h-5 bg-[#00ff7f] ml-0.5 align-middle animate-pulse" />
+                                )}
+                            </p>
                         </div>
                     </div>
                 </div>
             )}
 
             {/* Sources */}
-            {sources.length > 0 && (
+            {sources.length > 0 && !isStreaming && (
                 <div className="bg-[#161b22] rounded-xl border border-gray-800 overflow-hidden">
                     <button
                         onClick={() => setShowSources(!showSources)}

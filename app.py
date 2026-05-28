@@ -22,6 +22,7 @@ from response_agent import ResponseAgent
 import threat_explainer
 from log_embedder import embedder
 import rag_agent
+from rag.chain import stream_answer
 from agents.security_agent import run_agent
 
 # Load environment variables
@@ -1816,44 +1817,43 @@ def xai_feature_stats():
 
 @app.route('/api/explain-threat', methods=['POST'])
 def explain_threat():
-    """Generate AI-powered explanation for a threat detection event."""
+    """Generate AI-powered explanation for a threat detection event.
+    Pass stream_id for real-time token streaming via llm_stream SocketIO events."""
+    data = request.get_json()
+    stream_id = data.get('stream_id')
+    event = {
+        'src_ip': data.get('src_ip', 'unknown'),
+        'dst_ip': data.get('dst_ip', 'unknown'),
+        'protocol': data.get('protocol', 'unknown'),
+        'sport': data.get('sport', 'unknown'),
+        'dport': data.get('dport', 'unknown'),
+        'reason': data.get('reason', 'unknown'),
+        'rf_confidence': data.get('rf_confidence', 'unknown'),
+        'action': data.get('action', 'unknown'),
+        'severity': data.get('severity', 'unknown'),
+        'is_malicious': data.get('is_malicious', 'unknown'),
+    }
+    cache_key = (event['src_ip'], event['reason'], event['action'])
+    is_cached = cache_key in threat_explainer._explanation_cache
+
     try:
-        data = request.get_json()
-        
-        # Extract event fields
-        event = {
-            'src_ip': data.get('src_ip', 'unknown'),
-            'dst_ip': data.get('dst_ip', 'unknown'),
-            'protocol': data.get('protocol', 'unknown'),
-            'sport': data.get('sport', 'unknown'),
-            'dport': data.get('dport', 'unknown'),
-            'reason': data.get('reason', 'unknown'),
-            'rf_confidence': data.get('rf_confidence', 'unknown'),
-            'action': data.get('action', 'unknown'),
-            'severity': data.get('severity', 'unknown'),
-            'is_malicious': data.get('is_malicious', 'unknown'),
-        }
-        
-        # Check if result is cached
-        cache_key = (event['src_ip'], event['reason'], event['action'])
-        is_cached = cache_key in threat_explainer._explanation_cache
-        
-        # Get explanation
+        if stream_id:
+            full_text = ''
+            for token in threat_explainer.stream_explain_threat(event):
+                full_text += token
+                socketio.emit('llm_stream', {'stream_id': stream_id, 'token': token, 'done': False})
+            socketio.emit('llm_stream', {'stream_id': stream_id, 'token': '', 'done': True})
+            return jsonify({'explanation': full_text, 'cached': is_cached}), 200
+
         explanation = threat_explainer.explain_threat(event)
-        
-        return jsonify({
-            'explanation': explanation,
-            'cached': is_cached
-        }), 200
-        
+        return jsonify({'explanation': explanation, 'cached': is_cached}), 200
+
     except Exception as e:
-        # Always return 200 with fallback message, never 500
         print(f"Error in explain_threat endpoint: {e}")
-        fallback_msg = f"Unable to generate explanation. Threat: {data.get('reason', 'unknown')} from {data.get('src_ip', 'unknown')}."
-        return jsonify({
-            'explanation': fallback_msg,
-            'cached': False
-        }), 200
+        fallback_msg = f"Unable to generate explanation. Threat: {event['reason']} from {event['src_ip']}."
+        if stream_id:
+            socketio.emit('llm_stream', {'stream_id': stream_id, 'token': fallback_msg, 'done': True})
+        return jsonify({'explanation': fallback_msg, 'cached': False}), 200
 
 
 @app.route('/api/eval-results', methods=['GET'])
@@ -1875,17 +1875,29 @@ def get_eval_results():
 @app.route('/api/log-query', methods=['POST'])
 @jwt_required()
 def log_query():
-    """Query logs using RAG with Gemini."""
+    """Query logs using RAG with Gemini. Pass stream_id for real-time token streaming via llm_stream SocketIO events."""
     try:
         data = request.get_json()
         question = data.get('question', '')
+        stream_id = data.get('stream_id')
         if not question:
             return jsonify({'error': 'Question is required'}), 400
-        
+
+        if stream_id:
+            sources, token_gen = stream_answer(question)
+            full_answer = ''
+            for token in token_gen:
+                full_answer += token
+                socketio.emit('llm_stream', {'stream_id': stream_id, 'token': token, 'done': False})
+            socketio.emit('llm_stream', {'stream_id': stream_id, 'token': '', 'done': True, 'sources': sources})
+            return jsonify({'answer': full_answer, 'sources': sources, 'query': question}), 200
+
         result = rag_agent.answer_log_query(question)
         return jsonify(result), 200
     except Exception as e:
         print(f"Error in log_query: {e}")
+        if stream_id:
+            socketio.emit('llm_stream', {'stream_id': stream_id, 'token': '', 'done': True, 'error': str(e), 'sources': []})
         return jsonify({'error': str(e)}), 500
 
 

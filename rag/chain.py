@@ -1,4 +1,5 @@
 import os
+from typing import Generator
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -67,19 +68,43 @@ def search_logs(
     return [doc.metadata for doc in docs]
 
 
-def answer_query(question: str, k: int = 8) -> dict:
-    retriever = _get_vectorstore().as_retriever(search_kwargs={"k": k})
-
-    llm = ChatGoogleGenerativeAI(
+def _make_llm() -> ChatGoogleGenerativeAI:
+    return ChatGoogleGenerativeAI(
         model="gemini-1.5-flash",
         google_api_key=os.getenv("GEMINI_API_KEY"),
         max_output_tokens=400,
     )
 
+
+def stream_answer(
+    question: str, k: int = 8
+) -> tuple[list[dict], Generator[str, None, None]]:
+    """Retrieve sources, then return a generator that streams LLM tokens.
+
+    Returns (sources, token_generator). Caller iterates the generator to
+    consume tokens while sources are available immediately.
+    """
+    retriever = _get_vectorstore().as_retriever(search_kwargs={"k": k})
+    source_docs = retriever.invoke(question)
+    sources = [doc.metadata for doc in source_docs]
+    context = _format_docs(source_docs)
+
+    chain = get_prompt() | _make_llm() | StrOutputParser()
+
+    def _gen() -> Generator[str, None, None]:
+        for chunk in chain.stream({"context": context, "question": question}):
+            yield chunk
+
+    return sources, _gen()
+
+
+def answer_query(question: str, k: int = 8) -> dict:
+    retriever = _get_vectorstore().as_retriever(search_kwargs={"k": k})
+
     rag_chain = (
         {"context": retriever | _format_docs, "question": RunnablePassthrough()}
         | get_prompt()
-        | llm
+        | _make_llm()
         | StrOutputParser()
     )
 
