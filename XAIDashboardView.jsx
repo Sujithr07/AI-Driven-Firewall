@@ -336,7 +336,165 @@ const SHAPPanel = ({ detection, featureStats }) => {
     );
 };
 
+// ── Chart sub-components ───────────────────────────────────────────────────
+
+// Colours mirror MODEL_COLORS in evaluate_models.py
+const MODEL_PALETTE = {
+    rf:       '#3b82f6',
+    xgb:      '#a855f7',
+    ensemble: '#22c55e',
+    lstm:     '#f59e0b',
+};
+const MODEL_NAMES = { rf: 'RandomForest', xgb: 'XGBoost', ensemble: 'Ensemble', lstm: 'LSTM' };
+
+/** Pure-SVG line chart — ROC or PR. series: [{key, x[], y[], auc}] */
+const LineChart = ({ series, xLabel, yLabel, refLine = false, width = 370, height = 250 }) => {
+    const pad = { t: 14, r: 14, b: 36, l: 40 };
+    const W = width - pad.l - pad.r;
+    const H = height - pad.t - pad.b;
+    const px = v => pad.l + v * W;
+    const py = v => pad.t + (1 - v) * H;
+    const ticks = [0, 0.25, 0.5, 0.75, 1.0];
+
+    return (
+        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block' }}>
+            <rect width={width} height={height} fill="#0d1117" rx="8" />
+            {/* Grid */}
+            {ticks.map(v => (
+                <g key={v}>
+                    <line x1={px(0)} y1={py(v)} x2={px(1)} y2={py(v)} stroke="#21262d" strokeWidth={0.5} />
+                    <line x1={px(v)} y1={py(0)} x2={px(v)} y2={py(1)} stroke="#21262d" strokeWidth={0.5} />
+                    <text x={pad.l - 5} y={py(v)} textAnchor="end" fontSize={9} fill="#4b5563" dominantBaseline="middle">{v.toFixed(1)}</text>
+                    <text x={px(v)} y={pad.t + H + 13} textAnchor="middle" fontSize={9} fill="#4b5563">{v.toFixed(1)}</text>
+                </g>
+            ))}
+            {/* Axes */}
+            <line x1={px(0)} y1={py(0)} x2={px(1)} y2={py(0)} stroke="#374151" />
+            <line x1={px(0)} y1={py(0)} x2={px(0)} y2={py(1)} stroke="#374151" />
+            {/* Reference diagonal */}
+            {refLine && <line x1={px(0)} y1={py(0)} x2={px(1)} y2={py(1)} stroke="#374151" strokeDasharray="5,3" />}
+            {/* Curves */}
+            {series.map(s => {
+                if (!s.x?.length) return null;
+                const d = s.x.map((x, i) => `${i === 0 ? 'M' : 'L'}${px(x).toFixed(1)},${py(s.y[i]).toFixed(1)}`).join(' ');
+                return <path key={s.key} d={d} stroke={MODEL_PALETTE[s.key]} fill="none" strokeWidth={2} strokeLinejoin="round" />;
+            })}
+            {/* Axis labels */}
+            <text x={px(0.5)} y={height - 3} textAnchor="middle" fontSize={10} fill="#6b7280">{xLabel}</text>
+            <text x={9} y={py(0.5)} textAnchor="middle" fontSize={10} fill="#6b7280" transform={`rotate(-90,9,${py(0.5)})`}>{yLabel}</text>
+        </svg>
+    );
+};
+
+/** Legend row for chart: coloured dot + name + AUC. */
+const ChartLegend = ({ series }) => (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+        {series.map(s => s.auc != null && (
+            <div key={s.key} className="flex items-center gap-1.5 text-xs">
+                <span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: MODEL_PALETTE[s.key], height: 3 }} />
+                <span style={{ color: MODEL_PALETTE[s.key] }}>{MODEL_NAMES[s.key]}</span>
+                <span className="text-gray-500">AUC {s.auc.toFixed(3)}</span>
+            </div>
+        ))}
+    </div>
+);
+
+/** 2×2 confusion matrix with colour-coded cells. matrix: [[TN,FP],[FN,TP]] */
+const ConfusionMatrix = ({ matrix, modelKey }) => {
+    if (!matrix) return <div className="text-xs text-gray-600 text-center py-4">No data</div>;
+    const [[tn, fp], [fn, tp]] = matrix;
+    const cells = [
+        { v: tn, label: 'TN', sub: 'True Neg', cls: 'bg-green-900/40 text-green-300 border-green-800/60' },
+        { v: fp, label: 'FP', sub: 'False Pos', cls: 'bg-red-900/40 text-red-300 border-red-800/60' },
+        { v: fn, label: 'FN', sub: 'False Neg', cls: 'bg-orange-900/40 text-orange-300 border-orange-800/60' },
+        { v: tp, label: 'TP', sub: 'True Pos', cls: 'bg-green-900/40 text-green-300 border-green-800/60' },
+    ];
+    const color = MODEL_PALETTE[modelKey] || '#9ca3af';
+    return (
+        <div>
+            <p className="text-xs font-semibold mb-2 text-center" style={{ color }}>{MODEL_NAMES[modelKey]}</p>
+            {/* Column headers */}
+            <div className="grid grid-cols-3 gap-1 text-xs mb-0.5">
+                <div />
+                <div className="text-center text-gray-500">Normal</div>
+                <div className="text-center text-gray-500">Attack</div>
+            </div>
+            {/* Row 1: actual Normal */}
+            <div className="grid grid-cols-3 gap-1 mb-1">
+                <div className="flex items-center justify-end text-xs text-gray-500 pr-1">Normal</div>
+                <div className={`border rounded p-2 text-center ${cells[0].cls}`}>
+                    <div className="font-bold text-sm">{tn.toLocaleString()}</div>
+                    <div className="text-xs opacity-60">{cells[0].label}</div>
+                </div>
+                <div className={`border rounded p-2 text-center ${cells[1].cls}`}>
+                    <div className="font-bold text-sm">{fp.toLocaleString()}</div>
+                    <div className="text-xs opacity-60">{cells[1].label}</div>
+                </div>
+            </div>
+            {/* Row 2: actual Attack */}
+            <div className="grid grid-cols-3 gap-1">
+                <div className="flex items-center justify-end text-xs text-gray-500 pr-1">Attack</div>
+                <div className={`border rounded p-2 text-center ${cells[2].cls}`}>
+                    <div className="font-bold text-sm">{fn.toLocaleString()}</div>
+                    <div className="text-xs opacity-60">{cells[2].label}</div>
+                </div>
+                <div className={`border rounded p-2 text-center ${cells[3].cls}`}>
+                    <div className="font-bold text-sm">{tp.toLocaleString()}</div>
+                    <div className="text-xs opacity-60">{cells[3].label}</div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+/** Horizontal bar comparison across models for one metric group. */
+const MetricBars = ({ models }) => {
+    const metricDefs = [
+        { key: 'accuracy',  label: 'Accuracy'  },
+        { key: 'precision', label: 'Precision' },
+        { key: 'recall',    label: 'Recall'    },
+        { key: 'f1_macro',  label: 'F1 Macro'  },
+    ];
+    return (
+        <div className="space-y-5">
+            {metricDefs.map(({ key, label }) => (
+                <div key={key}>
+                    <p className="text-xs text-gray-500 mb-2 uppercase tracking-wider">{label}</p>
+                    <div className="space-y-1.5">
+                        {models.map(({ modelKey, m }) => {
+                            if (!m) return null;
+                            const val = m[key] ?? 0;
+                            const color = MODEL_PALETTE[modelKey];
+                            return (
+                                <div key={modelKey} className="flex items-center gap-2">
+                                    <span className="text-xs w-24 text-right flex-shrink-0" style={{ color }}>
+                                        {MODEL_NAMES[modelKey]}
+                                    </span>
+                                    <div className="flex-1 h-4 bg-gray-900 rounded overflow-hidden">
+                                        <div
+                                            className="h-full rounded transition-all duration-700"
+                                            style={{ width: `${val * 100}%`, backgroundColor: color, opacity: 0.85 }}
+                                        />
+                                    </div>
+                                    <span className="text-xs font-mono w-12 flex-shrink-0" style={{ color }}>
+                                        {(val * 100).toFixed(1)}%
+                                    </span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+// ── ModelEvaluationPanel ───────────────────────────────────────────────────
+
 const ModelEvaluationPanel = ({ evalResults }) => {
+    const [group, setGroup] = useState('nslkdd');   // 'original' | 'nslkdd'
+    const [tab,   setTab]   = useState('metrics');   // 'metrics' | 'confusion' | 'roc' | 'pr'
+
     if (!evalResults) {
         return (
             <div className="bg-[#161b22] rounded-xl border border-gray-800 p-8 text-center">
@@ -347,154 +505,209 @@ const ModelEvaluationPanel = ({ evalResults }) => {
 
     const { original_models, nslkdd_trained, distribution_shift_note, baseline_comparison, recommendation, timestamp } = evalResults;
 
-    const MetricCard = ({ title, metrics, modelColor, note }) => {
-        if (!metrics) return null;
-        return (
-            <div className="bg-[#161b22] rounded-xl border border-gray-800 p-4">
-                <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">{title}</h4>
-                <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                        <span className="text-xs text-gray-500">Accuracy</span>
-                        <span className={`text-sm font-mono ${modelColor}`}>{metrics.accuracy?.toFixed(4) || 'N/A'}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                        <span className="text-xs text-gray-500">Precision</span>
-                        <span className={`text-sm font-mono ${modelColor}`}>{metrics.precision?.toFixed(4) || 'N/A'}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                        <span className="text-xs text-gray-500">Recall</span>
-                        <span className={`text-sm font-mono ${modelColor}`}>{metrics.recall?.toFixed(4) || 'N/A'}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                        <span className="text-xs text-gray-500">F1 (macro)</span>
-                        <span className={`text-sm font-mono ${modelColor}`}>{metrics.f1_macro?.toFixed(4) || 'N/A'}</span>
-                    </div>
-                    {note && (
-                        <div className="mt-3 pt-3 border-t border-gray-800">
-                            <p className="text-xs text-amber-400 leading-relaxed">
-                                {note}
-                            </p>
-                        </div>
-                    )}
-                </div>
-            </div>
-        );
-    };
+    // Build model list for the active group
+    const activeGroup = group === 'nslkdd' ? nslkdd_trained : original_models;
+    const modelKeys   = group === 'nslkdd' ? ['rf', 'xgb', 'ensemble', 'lstm'] : ['rf', 'xgb', 'ensemble'];
+    const models      = modelKeys.map(k => ({ modelKey: k, m: activeGroup?.[k] })).filter(x => x.m);
+
+    // Build chart series from model metrics
+    const rocSeries = models
+        .filter(({ m }) => m?.roc)
+        .map(({ modelKey, m }) => ({ key: modelKey, x: m.roc.fpr, y: m.roc.tpr, auc: m.roc.auc }));
+    const prSeries = models
+        .filter(({ m }) => m?.pr)
+        .map(({ modelKey, m }) => ({ key: modelKey, x: m.pr.recall, y: m.pr.precision, auc: m.pr.auc }));
+
+    const groupBtn = (id, label, badge) => (
+        <button
+            key={id}
+            onClick={() => setGroup(id)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-2 ${
+                group === id
+                    ? 'bg-[#00ff7f]/15 text-[#00ff7f] border border-[#00ff7f]/40'
+                    : 'bg-[#161b22] text-gray-400 border border-gray-800 hover:text-white'
+            }`}
+        >
+            {label}
+            <span className={`px-1.5 py-0.5 rounded-full text-xs font-bold ${
+                id === 'nslkdd'
+                    ? 'bg-green-600/20 text-green-400'
+                    : 'bg-amber-600/20 text-amber-400'
+            }`}>{badge}</span>
+        </button>
+    );
+
+    const tabBtn = (id, label) => (
+        <button
+            key={id}
+            onClick={() => setTab(id)}
+            className={`px-3 py-1.5 rounded text-xs font-medium transition ${
+                tab === id
+                    ? 'bg-gray-700 text-white'
+                    : 'text-gray-500 hover:text-gray-300'
+            }`}
+        >
+            {label}
+        </button>
+    );
 
     return (
-        <div className="space-y-6">
-            {/* Group 1: Original Models */}
-            <div>
-                <div className="flex items-center gap-3 mb-4">
-                    <h3 className="text-lg font-semibold text-white">Original firewall models (distribution shift test)</h3>
-                    <span className="px-2 py-1 rounded-full text-xs font-bold bg-amber-600/20 text-amber-400 border border-amber-500/30">
-                        Out-of-distribution
-                    </span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <MetricCard 
-                        title="RandomForest" 
-                        metrics={original_models?.rf} 
-                        modelColor="text-blue-400"
-                        note="Trained on live traffic, tested on NSL-KDD"
-                    />
-                    <MetricCard 
-                        title="XGBoost" 
-                        metrics={original_models?.xgb} 
-                        modelColor="text-purple-400"
-                        note="Trained on live traffic, tested on NSL-KDD"
-                    />
-                    <MetricCard 
-                        title="Ensemble" 
-                        metrics={original_models?.ensemble} 
-                        modelColor="text-green-400"
-                        note="Trained on live traffic, tested on NSL-KDD"
-                    />
-                </div>
+        <div className="space-y-4">
+            {/* Group selector */}
+            <div className="flex items-center gap-3">
+                {groupBtn('nslkdd',   'NSL-KDD Retrained', 'In-dist')}
+                {groupBtn('original', 'Original Models',   'OOD')}
             </div>
 
-            {/* Distribution Shift Explanation */}
-            <div className="text-center py-2">
-                <p className="text-xs text-gray-500 leading-relaxed">
-                    The gap between groups demonstrates distribution shift — a known challenge in deploying IDS models across different network environments.
-                </p>
+            {/* Tab bar */}
+            <div className="flex gap-1 bg-[#0d1117] rounded-lg p-1 w-fit">
+                {tabBtn('metrics',   'Metrics')}
+                {tabBtn('confusion', 'Confusion Matrix')}
+                {tabBtn('roc',       'ROC Curves')}
+                {tabBtn('pr',        'PR Curves')}
             </div>
 
-            {/* Group 2: NSL-KDD Retrained Models */}
-            <div>
-                <div className="flex items-center gap-3 mb-4">
-                    <h3 className="text-lg font-semibold text-white">NSL-KDD retrained models</h3>
-                    <span className="px-2 py-1 rounded-full text-xs font-bold bg-green-600/20 text-green-400 border border-green-500/30">
-                        In-distribution
-                    </span>
+            {/* ── Metrics tab ── */}
+            {tab === 'metrics' && (
+                <div className="space-y-4">
+                    {models.length === 0 ? (
+                        <p className="text-gray-500 text-sm">No model data for this group. Run evaluate_models.py first.</p>
+                    ) : (
+                        <>
+                            <MetricBars models={models} />
+                            {/* Scalar summary table */}
+                            <div className="bg-[#0d1117] rounded-xl border border-gray-800 overflow-hidden mt-2">
+                                <table className="w-full text-xs">
+                                    <thead>
+                                        <tr className="border-b border-gray-800">
+                                            <th className="text-left text-gray-500 px-3 py-2 font-medium">Model</th>
+                                            <th className="text-right text-gray-500 px-3 py-2 font-medium">Accuracy</th>
+                                            <th className="text-right text-gray-500 px-3 py-2 font-medium">Precision</th>
+                                            <th className="text-right text-gray-500 px-3 py-2 font-medium">Recall</th>
+                                            <th className="text-right text-gray-500 px-3 py-2 font-medium">F1</th>
+                                            <th className="text-right text-gray-500 px-3 py-2 font-medium">ROC-AUC</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {models.map(({ modelKey, m }) => (
+                                            <tr key={modelKey} className="border-b border-gray-800/50 hover:bg-gray-800/20">
+                                                <td className="px-3 py-2 font-medium" style={{ color: MODEL_PALETTE[modelKey] }}>
+                                                    {MODEL_NAMES[modelKey]}
+                                                </td>
+                                                {['accuracy', 'precision', 'recall', 'f1_macro'].map(k => (
+                                                    <td key={k} className="text-right font-mono text-gray-300 px-3 py-2">
+                                                        {m[k] != null ? (m[k] * 100).toFixed(1) + '%' : '—'}
+                                                    </td>
+                                                ))}
+                                                <td className="text-right font-mono text-gray-300 px-3 py-2">
+                                                    {m.roc?.auc != null ? m.roc.auc.toFixed(3) : '—'}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </>
+                    )}
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <MetricCard 
-                        title="RandomForest (NSL-KDD)" 
-                        metrics={nslkdd_trained?.rf} 
-                        modelColor="text-blue-400"
-                    />
-                    <MetricCard 
-                        title="XGBoost (NSL-KDD)" 
-                        metrics={nslkdd_trained?.xgb} 
-                        modelColor="text-purple-400"
-                    />
-                </div>
-                <div className="mt-4 text-center">
-                    <p className="text-xs text-gray-500 leading-relaxed max-w-2xl mx-auto">
-                        81.93% accuracy using 11 real-time capturable features. Papers reporting 95–99% use all 41 features including time-window aggregates unavailable in live single-packet inspection.
+            )}
+
+            {/* ── Confusion Matrix tab ── */}
+            {tab === 'confusion' && (
+                <div>
+                    {models.length === 0 ? (
+                        <p className="text-gray-500 text-sm">No data. Run evaluate_models.py first.</p>
+                    ) : (
+                        <div className="grid grid-cols-2 gap-6">
+                            {models.map(({ modelKey, m }) => (
+                                <div key={modelKey} className="bg-[#0d1117] rounded-xl border border-gray-800 p-4">
+                                    <ConfusionMatrix matrix={m.confusion_matrix} modelKey={modelKey} />
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    <p className="text-xs text-gray-600 mt-3">
+                        Rows = Actual class, Columns = Predicted class. TN/TP are correct; FP/FN are errors.
                     </p>
                 </div>
-            </div>
+            )}
 
-            {/* Baseline Comparison */}
+            {/* ── ROC Curves tab ── */}
+            {tab === 'roc' && (
+                <div className="bg-[#0d1117] rounded-xl border border-gray-800 p-4">
+                    {rocSeries.length === 0 ? (
+                        <p className="text-gray-500 text-sm">ROC data unavailable — re-run evaluate_models.py with the updated code.</p>
+                    ) : (
+                        <>
+                            <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-3">
+                                ROC Curve — {group === 'nslkdd' ? 'NSL-KDD Retrained' : 'Original (OOD)'}
+                            </h4>
+                            <LineChart series={rocSeries} xLabel="False Positive Rate" yLabel="True Positive Rate" refLine={true} width={520} height={280} />
+                            <ChartLegend series={rocSeries} />
+                            <p className="text-xs text-gray-600 mt-3">
+                                Dashed diagonal = random classifier (AUC 0.5). Higher and further left is better.
+                            </p>
+                        </>
+                    )}
+                </div>
+            )}
+
+            {/* ── PR Curves tab ── */}
+            {tab === 'pr' && (
+                <div className="bg-[#0d1117] rounded-xl border border-gray-800 p-4">
+                    {prSeries.length === 0 ? (
+                        <p className="text-gray-500 text-sm">PR data unavailable — re-run evaluate_models.py with the updated code.</p>
+                    ) : (
+                        <>
+                            <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-3">
+                                Precision-Recall Curve — {group === 'nslkdd' ? 'NSL-KDD Retrained' : 'Original (OOD)'}
+                            </h4>
+                            <LineChart series={prSeries} xLabel="Recall" yLabel="Precision" refLine={false} width={520} height={280} />
+                            <ChartLegend series={prSeries} />
+                            <p className="text-xs text-gray-600 mt-3">
+                                Area under PR curve (PR-AUC) is a better metric than ROC-AUC for imbalanced datasets.
+                            </p>
+                        </>
+                    )}
+                </div>
+            )}
+
+            {/* Baseline + notes (always visible) */}
             {baseline_comparison && (
-                <div className="bg-[#161b22] rounded-xl border border-gray-800 p-4">
-                    <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Baseline Comparison</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                        <div>
-                            <span className="text-gray-500">Majority class accuracy</span>
-                            <span className="text-white ml-2 font-mono">{baseline_comparison.majority_class_accuracy?.toFixed(4)}</span>
-                            <span className="text-gray-600 ml-1">(always predict {baseline_comparison.majority_class})</span>
-                        </div>
-                        <div>
-                            <span className="text-gray-500">Random accuracy baseline</span>
-                            <span className="text-white ml-2 font-mono">{baseline_comparison.random_accuracy}</span>
-                        </div>
-                        <div>
-                            <span className="text-gray-500">Test distribution</span>
-                            <span className="text-white ml-2 font-mono">{baseline_comparison.normal_samples} normal, {baseline_comparison.attack_samples} attack</span>
-                        </div>
+                <div className="bg-[#161b22] rounded-xl border border-gray-800 p-3 flex flex-wrap gap-6 text-xs">
+                    <div>
+                        <span className="text-gray-500">Majority-class baseline</span>
+                        <span className="text-white ml-2 font-mono">{(baseline_comparison.majority_class_accuracy * 100).toFixed(1)}%</span>
+                        <span className="text-gray-600 ml-1">(always → {baseline_comparison.majority_class})</span>
+                    </div>
+                    <div>
+                        <span className="text-gray-500">Test set</span>
+                        <span className="text-white ml-2 font-mono">{baseline_comparison.normal_samples?.toLocaleString()} normal / {baseline_comparison.attack_samples?.toLocaleString()} attack</span>
                     </div>
                 </div>
             )}
 
-            {/* Domain Shift Note */}
-            {distribution_shift_note && (
-                <div className="bg-amber-900/10 rounded-xl border border-amber-500/30 p-4">
-                    <h4 className="text-sm font-semibold text-amber-400 uppercase tracking-wider mb-2">⚠️ Domain Shift Warning</h4>
-                    <p className="text-sm text-amber-300 leading-relaxed">{distribution_shift_note}</p>
+            {group === 'original' && distribution_shift_note && (
+                <div className="bg-amber-900/10 rounded-xl border border-amber-500/30 p-3">
+                    <p className="text-xs text-amber-300 leading-relaxed">⚠ {distribution_shift_note}</p>
                 </div>
             )}
 
-            {/* Recommendation */}
             {recommendation && (
-                <div className="bg-blue-900/10 rounded-xl border border-blue-500/30 p-4">
-                    <h4 className="text-sm font-semibold text-blue-400 uppercase tracking-wider mb-2">💡 Recommendation</h4>
-                    <p className="text-sm text-blue-300 leading-relaxed">{recommendation}</p>
+                <div className="bg-blue-900/10 rounded-xl border border-blue-500/30 p-3">
+                    <p className="text-xs text-blue-300 leading-relaxed">💡 {recommendation}</p>
                 </div>
             )}
 
-            {/* Timestamp and Button */}
-            <div className="flex items-center justify-between pt-4 border-t border-gray-800">
-                <span className="text-xs text-gray-500">
-                    Last updated: {timestamp ? new Date(timestamp).toLocaleString() : 'N/A'}
+            <div className="flex items-center justify-between pt-3 border-t border-gray-800">
+                <span className="text-xs text-gray-600">
+                    Last run: {timestamp ? new Date(timestamp).toLocaleString() : 'never'}
                 </span>
-                <button 
+                <button
                     onClick={() => window.location.href = '/api/run-evaluation'}
-                    className="px-4 py-2 bg-[#00ff7f]/20 border border-[#00ff7f] text-[#00ff7f] rounded-lg hover:bg-[#00ff7f]/40 transition text-sm"
+                    className="px-3 py-1.5 bg-[#00ff7f]/20 border border-[#00ff7f] text-[#00ff7f] rounded-lg hover:bg-[#00ff7f]/40 transition text-xs"
                 >
-                    Run NSL-KDD evaluation
+                    Run evaluation
                 </button>
             </div>
         </div>

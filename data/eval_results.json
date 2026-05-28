@@ -1,54 +1,52 @@
 {
-  "rf": {
-    "accuracy": 0.45617459190915544,
-    "precision": 0.6393547877456254,
-    "recall": 0.5205966737794978,
-    "f1_macro": 0.35678045351093673,
-    "confusion_matrix": [
-      [
-        9573,
-        138
-      ],
-      [
-        12122,
-        711
-      ]
-    ]
+  "original_models": {
+    "rf": {
+      "accuracy": 0.4562,
+      "precision": 0.6394,
+      "recall": 0.5206,
+      "f1_macro": 0.3568,
+      "confusion_matrix": [[9573, 138], [12122, 711]]
+    },
+    "xgb": {
+      "accuracy": 0.4308,
+      "precision": 0.2154,
+      "recall": 0.5,
+      "f1_macro": 0.3011,
+      "confusion_matrix": [[9711, 0], [12833, 0]]
+    },
+    "ensemble": {
+      "accuracy": 0.4308,
+      "precision": 0.2154,
+      "recall": 0.5,
+      "f1_macro": 0.3011,
+      "confusion_matrix": [[9711, 0], [12833, 0]]
+    }
   },
-  "xgb": {
-    "accuracy": 0.43075762952448543,
-    "precision": 0.21537881476224272,
-    "recall": 0.5,
-    "f1_macro": 0.3010696016121532,
-    "confusion_matrix": [
-      [
-        9711,
-        0
-      ],
-      [
-        12833,
-        0
-      ]
-    ]
+  "nslkdd_trained": {
+    "rf": {
+      "accuracy": 0.8193,
+      "precision": 0.8387,
+      "recall": 0.8367,
+      "f1_macro": 0.8193,
+      "confusion_matrix": [[9347, 364], [3710, 9123]]
+    },
+    "xgb": {
+      "accuracy": 0.8625,
+      "precision": 0.8691,
+      "recall": 0.8745,
+      "f1_macro": 0.8624,
+      "confusion_matrix": [[9332, 379], [2720, 10113]]
+    },
+    "ensemble": {
+      "accuracy": 0.8579,
+      "precision": 0.8659,
+      "recall": 0.8706,
+      "f1_macro": 0.8578,
+      "confusion_matrix": [[9345, 366], [2837, 9996]]
+    },
+    "lstm": null
   },
-  "ensemble": {
-    "accuracy": 0.43075762952448543,
-    "precision": 0.21537881476224272,
-    "recall": 0.5,
-    "f1_macro": 0.3010696016121532,
-    "confusion_matrix": [
-      [
-        9711,
-        0
-      ],
-      [
-        12833,
-        0
-      ]
-    ]
-  },
-  "timestamp": "2026-05-11T09:57:54.340006",
-  "distribution_shift_note": "Original models were trained on live Scapy traffic features (proto_num, sport, dport, pkt_size, IP flags). NSL-KDD represents a domain shift - it uses 1999 DARPA lab data with connection-level features (protocol_type, service, flag, src_bytes, dst_bytes). Low accuracy is expected due to this feature space mismatch.",
+  "distribution_shift_note": "Original models were trained on live Scapy traffic features (proto_num, sport, dport, pkt_size, IP flags). NSL-KDD represents a domain shift — it uses 1999 DARPA lab data with connection-level features. Low accuracy on original models is expected.",
   "baseline_comparison": {
     "majority_class_accuracy": 0.5692,
     "majority_class": "attack",
@@ -57,5 +55,12 @@
     "attack_samples": 12833,
     "normal_samples": 9711
   },
-  "recommendation": "Retrain on NSL-KDD for in-distribution benchmark, or collect labeled live traffic for true production evaluation"
+  "recommendation": "NSL-KDD-retrained models show real capability (XGBoost 86%, Ensemble 86%). Re-run evaluate_models.py to train the LSTM and add ROC/PR curves. For production accuracy, collect labeled live traffic matching your deployment environment.",
+  "model_colors": {
+    "rf": "#3b82f6",
+    "xgb": "#a855f7",
+    "ensemble": "#22c55e",
+    "lstm": "#f59e0b"
+  },
+  "timestamp": "2026-05-11T09:57:57.372911"
 }
