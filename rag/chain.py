@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 from rag.embeddings import get_embeddings
-from rag.prompts import get_prompt
+from rag.prompts import get_prompt, sanitize_query
 
 load_dotenv()
 
@@ -77,13 +77,15 @@ def _make_llm() -> ChatGoogleGenerativeAI:
 
 
 def stream_answer(
-    question: str, k: int = 8
+    question: str, k: int = 8, sanitize: bool = True
 ) -> tuple[list[dict], Generator[str, None, None]]:
     """Retrieve sources, then return a generator that streams LLM tokens.
 
     Returns (sources, token_generator). Caller iterates the generator to
     consume tokens while sources are available immediately.
     """
+    if sanitize:
+        question = sanitize_query(question)
     retriever = _get_vectorstore().as_retriever(search_kwargs={"k": k})
     source_docs = retriever.invoke(question)
     sources = [doc.metadata for doc in source_docs]
@@ -98,7 +100,9 @@ def stream_answer(
     return sources, _gen()
 
 
-def answer_query(question: str, k: int = 8) -> dict:
+def answer_query(question: str, k: int = 8, sanitize: bool = True) -> dict:
+    if sanitize:
+        question = sanitize_query(question)
     retriever = _get_vectorstore().as_retriever(search_kwargs={"k": k})
 
     rag_chain = (

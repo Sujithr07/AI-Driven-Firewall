@@ -1,8 +1,16 @@
+import json
 import os
 from typing import Generator
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage
+from langchain_core.output_parsers import StrOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
+from rag.prompts import (
+    sanitize_event,
+    sanitize_output,
+    build_threat_event_str,
+    get_threat_prompt,
+    get_threat_stream_prompt,
+)
 
 load_dotenv()
 
@@ -14,61 +22,83 @@ def _make_llm() -> ChatGoogleGenerativeAI:
         model="gemini-1.5-flash",
         google_api_key=os.getenv("GEMINI_API_KEY"),
         max_output_tokens=300,
+        temperature=0.2,
     )
 
 
-def _build_prompt(event: dict) -> str:
-    return (
-        "Explain this network threat in 2-3 simple sentences. Avoid jargon.\n\n"
-        "Event details:\n"
-        f"- Source IP: {event.get('src_ip', 'unknown')}\n"
-        f"- Destination IP: {event.get('dst_ip', 'unknown')}\n"
-        f"- Protocol: {event.get('protocol', 'unknown')}\n"
-        f"- Source port: {event.get('sport', 'unknown')}\n"
-        f"- Destination port: {event.get('dport', 'unknown')}\n"
-        f"- Detection reason: {event.get('reason', 'unknown')}\n"
-        f"- Confidence: {event.get('rf_confidence', 'unknown')}\n"
-        f"- Action taken: {event.get('action', 'unknown')}\n"
-        f"- Severity: {event.get('severity', 'unknown')}\n"
-        f"- Flagged as malicious: {event.get('is_malicious', 'unknown')}\n\n"
-        "Answer: What is this threat? Why was it blocked? What should an admin do next?"
+def _make_llm_json() -> ChatGoogleGenerativeAI:
+    return ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        google_api_key=os.getenv("GEMINI_API_KEY"),
+        max_output_tokens=300,
+        temperature=0.2,
+        generation_config={"response_mime_type": "application/json"},
     )
+
+
+def _format_json_explanation(raw: str) -> str:
+    """Parse JSON threat output and format as readable prose. Falls back to raw text."""
+    try:
+        data = json.loads(raw)
+        parts = []
+        if data.get("summary"):
+            parts.append(data["summary"])
+        if data.get("why_blocked"):
+            parts.append(f"Why blocked: {data['why_blocked']}")
+        if data.get("admin_action"):
+            parts.append(f"Recommended action: {data['admin_action']}")
+        if parts:
+            return "  ".join(parts)
+    except (json.JSONDecodeError, AttributeError, KeyError):
+        pass
+    return sanitize_output(raw)
 
 
 def explain_threat(event: dict) -> str:
-    cache_key = (event.get("src_ip"), event.get("reason"), event.get("action"))
+    """Return a formatted threat explanation. Uses JSON-structured LLM output internally."""
+    clean = sanitize_event(event)
+    cache_key = (clean.get("src_ip"), clean.get("reason"), clean.get("action"))
     if cache_key in _explanation_cache:
         return _explanation_cache[cache_key]
 
+    event_str = build_threat_event_str(clean)
+    chain = get_threat_prompt() | _make_llm_json() | StrOutputParser()
+
     try:
-        result = _make_llm().invoke([HumanMessage(content=_build_prompt(event))])
-        explanation = result.content.strip()
+        raw = chain.invoke({"event": event_str})
+        explanation = _format_json_explanation(raw)
         _explanation_cache[cache_key] = explanation
         return explanation
     except Exception:
-        return _get_heuristic_explanation(
-            event.get("reason", ""), event.get("src_ip", "unknown"), event.get("action", "unknown")
+        fallback = _get_heuristic_explanation(
+            clean.get("reason", ""), clean.get("src_ip", "unknown"), clean.get("action", "unknown")
         )
+        _explanation_cache[cache_key] = fallback
+        return fallback
 
 
 def stream_explain_threat(event: dict) -> Generator[str, None, None]:
-    """Yield text tokens from Gemini for a threat explanation. Caches the full result on completion."""
-    cache_key = (event.get("src_ip"), event.get("reason"), event.get("action"))
+    """Yield plain-text tokens from Gemini for real-time streaming."""
+    clean = sanitize_event(event)
+    cache_key = (clean.get("src_ip"), clean.get("reason"), clean.get("action"))
     if cache_key in _explanation_cache:
         yield _explanation_cache[cache_key]
         return
 
+    event_str = build_threat_event_str(clean)
+    chain = get_threat_stream_prompt() | _make_llm() | StrOutputParser()
+
     try:
         full_text = ""
-        for chunk in _make_llm().stream([HumanMessage(content=_build_prompt(event))]):
-            if chunk.content:
-                full_text += chunk.content
-                yield chunk.content
+        for chunk in chain.stream({"event": event_str}):
+            if chunk:
+                full_text += chunk
+                yield chunk
         if full_text:
-            _explanation_cache[cache_key] = full_text
+            _explanation_cache[cache_key] = sanitize_output(full_text)
     except Exception:
         fallback = _get_heuristic_explanation(
-            event.get("reason", ""), event.get("src_ip", "unknown"), event.get("action", "unknown")
+            clean.get("reason", ""), clean.get("src_ip", "unknown"), clean.get("action", "unknown")
         )
         _explanation_cache[cache_key] = fallback
         yield fallback
