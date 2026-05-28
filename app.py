@@ -22,6 +22,7 @@ from response_agent import ResponseAgent
 import threat_explainer
 from log_embedder import embedder
 import rag_agent
+from agents.security_agent import run_agent
 
 # Load environment variables
 load_dotenv()
@@ -1885,6 +1886,23 @@ def log_query():
         return jsonify(result), 200
     except Exception as e:
         print(f"Error in log_query: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/agent/chat', methods=['POST'])
+@jwt_required()
+def agent_chat():
+    """Multi-turn security analyst agent with tool calling and conversation memory."""
+    try:
+        data = request.get_json()
+        message = data.get('message', '').strip()
+        session_id = data.get('session_id', 'default')
+        if not message:
+            return jsonify({'error': 'message is required'}), 400
+        result = run_agent(message, session_id)
+        return jsonify(result), 200
+    except Exception as e:
+        print(f"Error in agent_chat: {e}")
         return jsonify({'error': str(e)}), 500
 
 
