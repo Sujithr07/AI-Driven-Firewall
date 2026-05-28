@@ -659,6 +659,22 @@ class DQNAgent:
             self.alpha = 0.1
             self._load_qtable()
 
+        # MLflow online tracking (silent no-op if mlops not installed)
+        try:
+            from mlops.tracking import RLTracker
+            self._tracker: RLTracker | None = RLTracker(run_name="dqn-agent", log_every=100)
+            self._tracker.log_hyperparams({
+                "gamma":           gamma,
+                "epsilon_initial": epsilon,
+                "epsilon_decay":   epsilon_decay,
+                "epsilon_min":     epsilon_min,
+                "batch_size":      batch_size,
+                "replay_size":     replay_size,
+                "backend":         "DQN/PyTorch" if TORCH_AVAILABLE else "Q-table",
+            })
+        except Exception:
+            self._tracker = None
+
     # ----- action selection -----
 
     def choose_action(self, state_tuple):
@@ -718,6 +734,18 @@ class DQNAgent:
         self.episode_rewards.append(reward)
         if len(self.episode_rewards) > 500:
             self.episode_rewards = self.episode_rewards[-500:]
+
+        if self._tracker is not None:
+            acc = (self.correct_decisions / self.total_decisions * 100) if self.total_decisions > 0 else 0.0
+            recent = self.episode_rewards[-100:] if self.episode_rewards else []
+            avg_rwd = sum(recent) / len(recent) if recent else 0.0
+            self._tracker.log_step(
+                step=self.total_decisions,
+                epsilon=self.epsilon,
+                reward=reward,
+                accuracy=acc,
+                avg_reward_last_100=avg_rwd,
+            )
 
     def _train_batch(self):
         batch = random.sample(self._replay, self.batch_size)

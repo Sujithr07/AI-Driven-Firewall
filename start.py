@@ -1,10 +1,13 @@
 """
 Startup script — launches both the FL server and the main Flask app.
+Optionally also starts the MLflow UI.
 
 Usage:
-    python start.py
+    python start.py                 # FL server + app
+    python start.py --mlflow-ui     # FL server + app + MLflow UI (port 5001)
 """
 
+import argparse
 import subprocess
 import sys
 import time
@@ -12,10 +15,23 @@ import signal
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PYTHON = sys.executable
+PYTHON   = sys.executable
+
+# MLflow tracking URI matches the default in mlops/tracking.py
+_DB_PATH     = os.path.join(BASE_DIR, "data", "mlflow.db").replace("\\", "/")
+_MLFLOW_URI  = os.getenv("MLFLOW_TRACKING_URI", f"sqlite:///{_DB_PATH}")
+_MLFLOW_PORT = int(os.getenv("MLFLOW_UI_PORT", "5001"))
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Firewall stack launcher")
+    parser.add_argument(
+        "--mlflow-ui",
+        action="store_true",
+        help=f"Also launch the MLflow UI on port {_MLFLOW_PORT}",
+    )
+    args = parser.parse_args()
+
     procs = []
 
     def shutdown(*_args):
@@ -57,9 +73,25 @@ def main():
     )
     procs.append(app_proc)
 
-    print("[start] Both servers running. Press Ctrl+C to stop.")
+    # 4. Optionally start MLflow UI
+    if args.mlflow_ui:
+        os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
+        print(f"[start] Launching MLflow UI on http://localhost:{_MLFLOW_PORT} ...")
+        mlflow_proc = subprocess.Popen(
+            [
+                PYTHON, "-m", "mlflow", "ui",
+                "--port", str(_MLFLOW_PORT),
+                "--backend-store-uri", _MLFLOW_URI,
+            ],
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+        procs.append(mlflow_proc)
+        print(f"[start] MLflow UI → http://localhost:{_MLFLOW_PORT}")
 
-    # Wait for either process to exit
+    print("[start] All servers running. Press Ctrl+C to stop.")
+
+    # Wait for any process to exit
     try:
         while True:
             for p in procs:

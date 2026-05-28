@@ -17,7 +17,24 @@ import urllib.request
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, accuracy_score
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    precision_score,
+    recall_score,
+    f1_score,
+)
+
+try:
+    import mlflow
+    from mlops.tracking import (
+        EXPERIMENT_RF_TRAINING,
+        MLFLOW_AVAILABLE,
+        log_feature_importance,
+        log_artifact,
+    )
+except ImportError:
+    MLFLOW_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Constants (must match detection_agent.py)
@@ -27,6 +44,13 @@ SUSPICIOUS_PORTS = {4444, 5555, 6666, 1337, 31337, 12345, 65535, 8888, 9999}
 WELL_KNOWN_PORTS = {80, 443, 53, 22, 21, 25, 110, 143, 993, 995, 8080, 3306, 5432, 27017}
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rf_model.pkl")
+
+FEATURE_NAMES = [
+    "proto_num", "sport", "dport", "pkt_size",
+    "is_src_private", "is_dst_private",
+    "has_syn", "has_fin", "has_rst",
+    "port_is_suspicious", "port_is_well_known",
+]
 
 # NSL-KDD dataset URLs (defcom17 mirror on GitHub)
 TRAIN_URL = "https://raw.githubusercontent.com/defcom17/NSL_KDD/master/KDDTrain+.txt"
@@ -168,19 +192,31 @@ def main():
           f"({n_attack_te} attack, {len(y_test) - n_attack_te} normal)")
 
     # 3. Train --------------------------------------------------------------
-    print("\nTraining RandomForestClassifier (n_estimators=100, max_depth=15) ...")
+    n_estimators = 100
+    max_depth    = 15
+    random_state = 42
+
+    print(f"\nTraining RandomForestClassifier "
+          f"(n_estimators={n_estimators}, max_depth={max_depth}) ...")
     model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=15,
-        random_state=42,
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        random_state=random_state,
         n_jobs=-1,
     )
     model.fit(X_train, y_train)
 
     # 4. Evaluate -----------------------------------------------------------
     y_pred = model.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
-    print(f"\nTest accuracy: {acc:.4f}")
+    acc  = float(accuracy_score(y_test, y_pred))
+    prec = float(precision_score(y_test, y_pred, average="macro", zero_division=0))
+    rec  = float(recall_score(y_test, y_pred, average="macro", zero_division=0))
+    f1   = float(f1_score(y_test, y_pred, average="macro", zero_division=0))
+
+    print(f"\nTest accuracy : {acc:.4f}")
+    print(f"Precision     : {prec:.4f}")
+    print(f"Recall        : {rec:.4f}")
+    print(f"F1 (macro)    : {f1:.4f}")
     print("\nClassification Report:")
     print(classification_report(y_test, y_pred, target_names=["normal", "attack"]))
 
@@ -193,6 +229,34 @@ def main():
             "y_buffer": [],
         }, f)
     print("Done — model saved successfully.")
+
+    # 6. MLflow logging -----------------------------------------------------
+    if MLFLOW_AVAILABLE:
+        try:
+            mlflow.set_experiment(EXPERIMENT_RF_TRAINING)
+            with mlflow.start_run(run_name="rf-nslkdd-train"):
+                mlflow.log_params({
+                    "n_estimators":   n_estimators,
+                    "max_depth":      max_depth,
+                    "random_state":   random_state,
+                    "n_jobs":         -1,
+                    "dataset":        "NSL-KDD",
+                    "train_samples":  len(y_train),
+                    "test_samples":   len(y_test),
+                    "attack_train":   n_attack_tr,
+                    "attack_test":    n_attack_te,
+                })
+                mlflow.log_metrics({
+                    "accuracy":   acc,
+                    "precision":  prec,
+                    "recall":     rec,
+                    "f1_macro":   f1,
+                })
+                log_artifact(MODEL_PATH, artifact_path="model")
+                log_feature_importance(model, FEATURE_NAMES)
+            print("[MLflow] Run logged to experiment:", EXPERIMENT_RF_TRAINING)
+        except Exception as e:
+            print(f"[MLflow] Logging skipped: {e}")
 
 
 if __name__ == "__main__":
