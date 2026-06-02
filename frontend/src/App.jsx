@@ -8,6 +8,7 @@ import DetectionAgentView, { BrainIcon } from './pages/Detection';
 import XAIDashboardView from './pages/XAI';
 import FederationView from './pages/Federation';
 import LogQueryChat from './components/LogQueryChat';
+import ReportsView from './pages/Reports';
 
 // --- Icon Components (using lucide-react equivalent SVGs) ---
 const ServerIcon = (props) => (
@@ -34,6 +35,9 @@ const GlobeIcon = (props) => (
 const MessageDotsIcon = (props) => (
     <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
 );
+const ClipboardIcon = (props) => (
+    <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
+);
 
 // --- Data Structures and Logic (Kept here for completeness, though Flask controls the core logic) ---
 
@@ -58,6 +62,7 @@ const Sidebar = ({ currentPage, setCurrentPage }) => {
         { id: 'firewall_rules', label: 'Firewall Rules', icon: LockIcon, active: currentPage === 'firewall_rules' },
         { id: 'immutable_logs', label: 'Immutable Logs', icon: FileTextIcon, active: currentPage === 'immutable_logs' },
         { id: 'log_query', label: 'Log assistant', icon: MessageDotsIcon, active: currentPage === 'log_query' },
+        { id: 'reports', label: 'Reports', icon: ClipboardIcon, active: currentPage === 'reports' },
     ];
 
     return (
@@ -961,6 +966,8 @@ const App = () => {
                 return <ImmutableLogsView token={token} />;
             case 'log_query':
                 return <LogQueryChat token={token} />;
+            case 'reports':
+                return <ReportsView token={token} />;
             case 'settings':
                 return <SettingsView token={token} user={user} onLogout={handleLogout} />;
             default:

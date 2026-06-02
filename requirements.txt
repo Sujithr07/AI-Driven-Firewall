@@ -20,4 +20,6 @@ langchain-chroma>=0.1.4
 chromadb>=0.5.0
 sentence-transformers>=3.0.0
 ragas>=0.2.0,<0.4.0
+markdown>=3.5
+xhtml2pdf>=0.2.13
 
