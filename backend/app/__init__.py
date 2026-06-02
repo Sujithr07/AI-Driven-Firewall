@@ -65,4 +65,9 @@ def create_app():
 
     register_blueprints(app)
 
+    @app.get("/health")
+    def health():
+        from flask import jsonify
+        return jsonify({"status": "ok"}), 200
+
     return app

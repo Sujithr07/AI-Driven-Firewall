@@ -1,0 +1,105 @@
+services:
+
+  # ── Flask API + SocketIO ──────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      target: backend
+    command: python run.py
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      FL_SERVER_URL: http://fl-server:6000
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      MLFLOW_TRACKING_URI: http://mlflow:5001
+    volumes:
+      - app-data:/app/data
+    depends_on:
+      fl-server:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+
+  # ── Federated Learning aggregation server ────────────────────────────────
+  fl-server:
+    build:
+      context: .
+      target: backend
+    command: python app/federation/fl_server.py
+    ports:
+      - "6000:6000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Nginx + built React SPA ───────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      target: frontend
+    ports:
+      - "80:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── ChromaDB vector store ────────────────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    environment:
+      ANONYMIZED_TELEMETRY: "false"
+      ALLOW_RESET: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── MLflow experiment tracking server ────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5001
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    ports:
+      - "5001:5001"
+    volumes:
+      - mlflow-data:/mlflow
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  app-data:
+  chroma-data:
+  mlflow-data:

@@ -20,11 +20,24 @@ _vectorstore: Chroma | None = None
 def _get_vectorstore() -> Chroma:
     global _vectorstore
     if _vectorstore is None:
-        _vectorstore = Chroma(
-            collection_name=_COLLECTION,
-            embedding_function=get_embeddings(),
-            persist_directory=CHROMA_DIR,
-        )
+        chroma_host = os.getenv("CHROMA_HOST")
+        if chroma_host:
+            import chromadb
+            http_client = chromadb.HttpClient(
+                host=chroma_host,
+                port=int(os.getenv("CHROMA_PORT", "8000")),
+            )
+            _vectorstore = Chroma(
+                client=http_client,
+                collection_name=_COLLECTION,
+                embedding_function=get_embeddings(),
+            )
+        else:
+            _vectorstore = Chroma(
+                collection_name=_COLLECTION,
+                embedding_function=get_embeddings(),
+                persist_directory=CHROMA_DIR,
+            )
     return _vectorstore
 
 

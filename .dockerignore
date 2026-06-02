@@ -1,0 +1,36 @@
+# Python bytecode
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Virtual environments
+**/.venv/
+**/venv/
+**/env/
+
+# Node modules and build output (rebuilt inside Docker)
+**/node_modules/
+frontend/dist/
+
+# Large dataset and training files (mount as volumes or download at runtime)
+backend/data/KDDTrain+.txt
+backend/data/KDDTest+.txt
+backend/data/mlflow.db
+backend/data/firewall.db
+
+# Git history
+.git/
+.gitignore
+
+# Secrets — passed via env_file at runtime, never baked into the image
+.env
+
+# IDE and OS artifacts
+.vscode/
+.idea/
+**/.DS_Store
+**/Thumbs.db
+
+# Documentation
+*.md
+dia.txt
